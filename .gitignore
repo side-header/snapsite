@@ -1,0 +1,32 @@
+# macOS
+.DS_Store
+
+# .NET build outputs
+bin/
+obj/
+
+# Published app/build artifacts
+build/
+
+# IDE/editor
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Logs/temp
+*.log
+*.tmp
+*.temp
+
+# Local sample data
+sample/
+sample2/
+
+# Design scratch files
+excalidraw/
+
+# NuGet
+*.nupkg
+packages/
