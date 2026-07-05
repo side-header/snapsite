@@ -9,7 +9,7 @@ The app scans a selected base folder, keeps classification state in memory, save
 ## Project Layout
 
 ```text
-src/NewGreen.App/
+src/SnapSite.App/
   SiteSnap.App.csproj
   Program.cs
   App.cs
@@ -381,13 +381,13 @@ Windows PowerShell publish:
 .\scripts\publish-windows-x64.ps1
 ```
 
-The scripts publish `src/NewGreen.App/SiteSnap.App.csproj`.
+The scripts publish `src/SnapSite.App/SiteSnap.App.csproj`.
 
 ## Verification
 
 Recommended checks:
 
-- Run `dotnet build src/NewGreen.App/SiteSnap.App.csproj`.
+- Run `dotnet build src/SnapSite.App/SiteSnap.App.csproj`.
 - Publish with the target OS script when packaging is changed.
 - For export changes, inspect generated DOCX/HWPX ZIP entries and key XML files.
 - For UI changes, run the Avalonia app and verify the relevant workflow manually.
