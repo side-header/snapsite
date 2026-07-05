@@ -22,7 +22,7 @@ public sealed partial class MainWindow : Window
     private const int FixedOuterMarginMm = 0;
     private const int PhotoScaleLimit = 5;
     private const string ProgramName = "SiteSnap";
-    private const string ProgramVersion = "0.1";
+    private const string ProgramVersion = "v0.1.1";
     private const string GroupDragPrefix = "new-green-group:";
     private const string UnclassifiedRootKey = "__newgreen_unclassified_root__";
     private const double SettingsPreviewPaperWidth = 420;

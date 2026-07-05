@@ -56,7 +56,7 @@ The `공종 추가` action belongs to the classified-area header and is visible 
 
 - The information button is placed to the left of `폴더 열기`.
 - The dialog shows the program version and thumbnail cache location.
-- The program version is hard-coded as `0.1`.
+- The program version is hard-coded as `v0.1.1`.
 - The dialog content is shown as a compact table and closes with an `확인` button.
 
 ## Unclassified Photo Area
