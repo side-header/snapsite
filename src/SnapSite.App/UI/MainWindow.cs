@@ -2243,8 +2243,8 @@ public sealed partial class MainWindow : Window
         var dialog = new Window
         {
             Title = ProgramName + " 정보",
-            Width = 520,
-            Height = 325,
+            Width = 640,
+            Height = 295,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Content = new StackPanel
             {
@@ -2275,16 +2275,19 @@ public sealed partial class MainWindow : Window
     {
         var table = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("110,*"),
-            RowDefinitions = new RowDefinitions("36,36,126")
+            ColumnDefinitions = new ColumnDefinitions("110,*,130"),
+            RowDefinitions = new RowDefinitions("36,36,64")
         };
 
         AddInfoCell(table, "프로그램", 0, 0, header: true);
         AddInfoCell(table, ProgramName, 1, 0);
+        AddInfoCell(table, string.Empty, 2, 0);
         AddInfoCell(table, "버전", 0, 1, header: true);
         AddInfoCell(table, ProgramVersion, 1, 1);
+        AddInfoCell(table, string.Empty, 2, 1);
         AddInfoCell(table, "캐시 위치", 0, 2, header: true);
         AddInfoCell(table, CacheInfoContent(thumbnailService.CacheRoot), 1, 2);
+        AddInfoCell(table, CacheClearButton(thumbnailService.CacheRoot), 2, 2);
 
         return table;
     }
@@ -2322,29 +2325,6 @@ public sealed partial class MainWindow : Window
 
     private Control CacheInfoContent(string cacheRoot)
     {
-        var clearCache = new Button
-        {
-            Content = "캐시 클리어",
-            MinWidth = 92,
-            Height = 28,
-            Padding = new Thickness(12, 0),
-            HorizontalAlignment = HorizontalAlignment.Left
-        };
-        clearCache.Click += (_, _) =>
-        {
-            try
-            {
-                thumbnailService.ClearCache();
-                RefreshAll();
-                status.Text = "캐시를 삭제했습니다: " + cacheRoot;
-                clearCache.Content = "삭제 완료";
-            }
-            catch (Exception ex)
-            {
-                _ = ShowErrorAsync(ex);
-            }
-        };
-
         return new StackPanel
         {
             Spacing = 6,
@@ -2352,10 +2332,69 @@ public sealed partial class MainWindow : Window
             Children =
             {
                 InfoText(cacheRoot),
-                InfoText("프로그램 종료 시 항상 캐시 내용은 자동으로 삭제됩니다.", foreground: Brush("#8a939b")),
-                clearCache
+                InfoText("프로그램 실행 시 항상 캐시가 만들어지고, 종료 시 항상 캐시 내용은 자동으로 삭제됩니다.", foreground: Brush("#8a939b"))
             }
         };
+    }
+
+    private Control CacheClearButton(string cacheRoot)
+    {
+        var label = new TextBlock
+        {
+            Text = "캐시 삭제",
+            FontSize = 13,
+            FontWeight = FontWeight.Bold,
+            Foreground = Brush("#0b5cad"),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var clearCache = new Border
+        {
+            MinWidth = 110,
+            Height = 32,
+            Padding = new Thickness(12, 0),
+            Background = Brushes.Transparent,
+            CornerRadius = new CornerRadius(4),
+            Cursor = new Cursor(StandardCursorType.Hand),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = label
+        };
+        clearCache.PointerEntered += (_, _) =>
+        {
+            clearCache.Background = Brush("#eef2f6");
+            label.Foreground = Brush("#1f252a");
+        };
+        clearCache.PointerExited += (_, _) =>
+        {
+            clearCache.Background = Brushes.Transparent;
+            label.Foreground = Brush("#0b5cad");
+        };
+        clearCache.PointerPressed += (_, args) =>
+        {
+            if (!args.GetCurrentPoint(clearCache).Properties.IsLeftButtonPressed)
+            {
+                return;
+            }
+
+            args.Handled = true;
+        };
+        clearCache.PointerReleased += (_, args) =>
+        {
+            try
+            {
+                thumbnailService.ClearCache();
+                RefreshAll();
+                status.Text = "캐시를 삭제했습니다: " + cacheRoot;
+            }
+            catch (Exception ex)
+            {
+                _ = ShowErrorAsync(ex);
+            }
+            args.Handled = true;
+        };
+
+        return clearCache;
     }
 
     private async Task ShowErrorAsync(Exception ex)
