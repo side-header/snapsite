@@ -4,6 +4,7 @@
 
 ```json
 {
+  "appVersion": "v0.1.2",
   "rootDir": "/Users/example/photos",
   "groups": [
     {
@@ -19,6 +20,10 @@
     }
   ],
   "exportSettings": {
+    "hwpxImageDpi": 300,
+    "docxImageDpi": 300,
+    "hwpxJpegQuality": 85,
+    "docxJpegQuality": 85,
     "page3": {
       "hwpx": { "topMm": 10, "bottomMm": 10, "leftMm": 20, "rightMm": 20 },
       "docx": { "topMm": 10, "bottomMm": 10, "leftMm": 20, "rightMm": 20 },
@@ -77,12 +82,15 @@
 
 | Path | Description |
 | --- | --- |
+| `appVersion` | SiteSnap version that last wrote the manifest. Older manifests may not have this field until saved again. |
 | `rootDir` | Absolute path of the selected base folder. It is updated when a folder is opened in the app. |
 | `groups[].id` | Internal group identifier. |
 | `groups[].title` | Group title rendered in the right cell of the bottom `공종` row. |
 | `groups[].cntPerPage` | Number of photos per photo-sheet page. Use `3` or `4`. |
 | `groups[].before`, `processing`, `after` | Photo paths relative to the base folder. They are exported as the `전`, `중`, and `후` phases. |
 | `groups[].beforeLabels`, `processingLabels`, `afterLabels` | Labels stored in the same order as each photo path. Empty labels show the gray `X` hint in the app and export as blank cells in documents. |
+| `exportSettings.hwpxImageDpi`, `exportSettings.docxImageDpi` | DPI used when resizing photos for HWPX and DOCX exports. Values are clamped from `72` to `600`; the default is `300`. |
+| `exportSettings.hwpxJpegQuality`, `exportSettings.docxJpegQuality` | JPEG quality used when encoding resized photos for HWPX and DOCX exports. Values are clamped from `0` to `100`; the default is `85`. |
 | `exportSettings.page3` | Paper and cell margin settings for groups with `cntPerPage` set to `3`. |
 | `exportSettings.page4` | Paper and cell margin settings for groups with `cntPerPage` set to `4`. |
 | `hwpx`, `docx` | Document paper margins. `topMm`, `bottomMm`, `leftMm`, and `rightMm` are in millimeters. |

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Encodings.Web;
 using NewGreen.Domain;
 using NewGreen.Infrastructure.FileSystem;
 
@@ -10,6 +11,7 @@ public sealed class MetadataStore
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         WriteIndented = true
     };
 
@@ -24,6 +26,7 @@ public sealed class MetadataStore
         var json = File.ReadAllText(path);
         var state = JsonSerializer.Deserialize<AppState>(json, JsonOptions) ?? new AppState();
         state.RootDir = rootDir;
+        state.AppVersion = string.IsNullOrWhiteSpace(state.AppVersion) ? AppInfo.Version : state.AppVersion;
         state.NormalizePaperTemplates();
         state.ExportSettings ??= new ExportSettings();
         state.ExportSettings.Normalize();
@@ -47,6 +50,7 @@ public sealed class MetadataStore
 
         Sanitize(rootDir, state);
         state.RootDir = rootDir;
+        state.AppVersion = AppInfo.Version;
         state.NormalizePaperTemplates();
         state.ExportSettings ??= new ExportSettings();
         state.ExportSettings.Normalize();

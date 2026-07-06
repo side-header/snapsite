@@ -19,8 +19,17 @@ public sealed partial class MainWindow
         Docx
     }
 
-    private static PaperTemplateInputSet PaperTemplateInputsFor(PaperTemplateSettings settings, int jpegQuality)
+    private static PaperTemplateInputSet PaperTemplateInputsFor(PaperTemplateSettings settings, int imageDpi, int jpegQuality)
     {
+        var imageDpiValue = new TextBlock
+        {
+            Text = $"{ExportSettings.NormalizeImageDpi(imageDpi)}",
+            Width = 36,
+            Foreground = Brush("#333"),
+            VerticalAlignment = VerticalAlignment.Center,
+            TextAlignment = TextAlignment.Right
+        };
+        var imageDpiSlider = PaperTemplateImageDpiSlider(imageDpi, imageDpiValue);
         var jpegQualityValue = new TextBlock
         {
             Text = $"{ExportSettings.NormalizeJpegQuality(jpegQuality)}",
@@ -44,6 +53,8 @@ public sealed partial class MainWindow
             PaperTemplateNumberBox(settings.LineSpacingPercent),
             PaperTemplateTextBox(settings.FontFamily),
             PaperTemplateCheckBox(settings.ShowPageNumber),
+            imageDpiSlider,
+            imageDpiValue,
             jpegQualitySlider,
             jpegQualityValue);
     }
@@ -114,6 +125,7 @@ public sealed partial class MainWindow
         form.Children.Add(PaperTemplateInputRow("글씨체", inputs.FontFamily));
         form.Children.Add(PaperTemplatePageNumberRow(inputs.ShowPageNumber));
         form.Children.Add(PaperTemplateFixedValueRow("사진 사이즈 조절", "삽입 크기에 맞게"));
+        form.Children.Add(PaperTemplateImageDpiRow(inputs.ImageDpi, inputs.ImageDpiValue));
         form.Children.Add(PaperTemplateQualityRow(inputs.JpegQuality, inputs.JpegQualityValue));
         form.Children.Add(PaperTemplateSectionHeader("1 페이지"));
         form.Children.Add(PaperTemplateInputRow("제목", inputs.Title));
@@ -226,7 +238,17 @@ public sealed partial class MainWindow
         return row;
     }
 
+    private static Control PaperTemplateImageDpiRow(Slider input, TextBlock value)
+    {
+        return PaperTemplateSliderRow("사진 DPI", input, value, "저", "고");
+    }
+
     private static Control PaperTemplateQualityRow(Slider input, TextBlock value)
+    {
+        return PaperTemplateSliderRow("사진 품질 (JPEG)", input, value, "저", "고");
+    }
+
+    private static Control PaperTemplateSliderRow(string label, Slider input, TextBlock value, string lowLabel, string highLabel)
     {
         var row = new Grid
         {
@@ -236,7 +258,7 @@ public sealed partial class MainWindow
         };
         AddToGrid(row, new TextBlock
         {
-            Text = "사진 품질 (JPEG)",
+            Text = label,
             Foreground = Brush("#333"),
             VerticalAlignment = VerticalAlignment.Center
         }, 0, 0);
@@ -249,7 +271,7 @@ public sealed partial class MainWindow
         };
         AddToGrid(control, new TextBlock
         {
-            Text = "저",
+            Text = lowLabel,
             Foreground = Brush("#555"),
             VerticalAlignment = VerticalAlignment.Center,
             TextAlignment = TextAlignment.Center
@@ -257,7 +279,7 @@ public sealed partial class MainWindow
         AddToGrid(control, input, 1, 0);
         AddToGrid(control, new TextBlock
         {
-            Text = "고",
+            Text = highLabel,
             Foreground = Brush("#555"),
             VerticalAlignment = VerticalAlignment.Center,
             TextAlignment = TextAlignment.Center
@@ -346,6 +368,26 @@ public sealed partial class MainWindow
             if (args.Property == RangeBase.ValueProperty)
             {
                 valueText.Text = $"{ReadJpegQualityInput(slider)}";
+            }
+        };
+        return slider;
+    }
+
+    private static Slider PaperTemplateImageDpiSlider(int value, TextBlock valueText)
+    {
+        var slider = new Slider
+        {
+            Minimum = ExportSettings.MinImageDpi,
+            Maximum = ExportSettings.MaxImageDpi,
+            Value = ExportSettings.NormalizeImageDpi(value),
+            Width = 260,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        slider.PropertyChanged += (_, args) =>
+        {
+            if (args.Property == RangeBase.ValueProperty)
+            {
+                valueText.Text = $"{ReadImageDpiInput(slider)}";
             }
         };
         return slider;
@@ -489,8 +531,8 @@ public sealed partial class MainWindow
         state.NormalizePaperTemplates();
         var paperTemplates = state.PaperTemplates!;
 
-        var hwpxPaperTemplate = PaperTemplateInputsFor(paperTemplates.Hwpx!, state.ExportSettings.HwpxJpegQuality);
-        var docxPaperTemplate = PaperTemplateInputsFor(paperTemplates.Docx!, state.ExportSettings.DocxJpegQuality);
+        var hwpxPaperTemplate = PaperTemplateInputsFor(paperTemplates.Hwpx!, state.ExportSettings.HwpxImageDpi, state.ExportSettings.HwpxJpegQuality);
+        var docxPaperTemplate = PaperTemplateInputsFor(paperTemplates.Docx!, state.ExportSettings.DocxImageDpi, state.ExportSettings.DocxJpegQuality);
         var page3 = SettingsPageInputsFor(state.ExportSettings.Page3!);
         var page4 = SettingsPageInputsFor(state.ExportSettings.Page4!);
 
@@ -523,6 +565,8 @@ public sealed partial class MainWindow
                 ReadPaperTemplateInputs(hwpxPaperTemplate, paperTemplates.Hwpx!);
                 ReadPaperTemplateInputs(docxPaperTemplate, paperTemplates.Docx!, lineSpacingFallback: 80);
                 state.NormalizePaperTemplates();
+                state.ExportSettings.HwpxImageDpi = ReadImageDpiInput(hwpxPaperTemplate.ImageDpi);
+                state.ExportSettings.DocxImageDpi = ReadImageDpiInput(docxPaperTemplate.ImageDpi);
                 state.ExportSettings.HwpxJpegQuality = ReadJpegQualityInput(hwpxPaperTemplate.JpegQuality);
                 state.ExportSettings.DocxJpegQuality = ReadJpegQualityInput(docxPaperTemplate.JpegQuality);
                 ReadPageInputs(page3, state.ExportSettings.Page3!);
@@ -833,6 +877,8 @@ public sealed partial class MainWindow
 
         var defaultSettings = new ExportSettings();
         defaultSettings.Normalize();
+        WriteImageDpiInput(hwpxPaperTemplate, defaultSettings.HwpxImageDpi);
+        WriteImageDpiInput(docxPaperTemplate, defaultSettings.DocxImageDpi);
         WriteJpegQualityInput(hwpxPaperTemplate, defaultSettings.HwpxJpegQuality);
         WriteJpegQualityInput(docxPaperTemplate, defaultSettings.DocxJpegQuality);
         WritePageInputs(page3, defaultSettings.Page3!);
@@ -859,6 +905,18 @@ public sealed partial class MainWindow
     private static int ReadJpegQualityInput(Slider input)
     {
         return ExportSettings.NormalizeJpegQuality((int)Math.Round(input.Value));
+    }
+
+    private static int ReadImageDpiInput(Slider input)
+    {
+        return ExportSettings.NormalizeImageDpi((int)Math.Round(input.Value));
+    }
+
+    private static void WriteImageDpiInput(PaperTemplateInputSet inputs, int value)
+    {
+        var dpi = ExportSettings.NormalizeImageDpi(value);
+        inputs.ImageDpi.Value = dpi;
+        inputs.ImageDpiValue.Text = $"{dpi}";
     }
 
     private static void WriteJpegQualityInput(PaperTemplateInputSet inputs, int value)

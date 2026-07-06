@@ -7,6 +7,15 @@ public sealed class ExportSettings
 {
     public const int DefaultMarginMm = 20;
     public const int DefaultJpegQuality = 85;
+    public const int DefaultImageDpi = 300;
+    public const int MinImageDpi = 72;
+    public const int MaxImageDpi = 600;
+
+    [JsonPropertyName("hwpxImageDpi")]
+    public int HwpxImageDpi { get; set; } = DefaultImageDpi;
+
+    [JsonPropertyName("docxImageDpi")]
+    public int DocxImageDpi { get; set; } = DefaultImageDpi;
 
     [JsonPropertyName("hwpxJpegQuality")]
     public int HwpxJpegQuality { get; set; } = DefaultJpegQuality;
@@ -122,6 +131,8 @@ public sealed class ExportSettings
         Page4 ??= legacySettings.Clone();
         Page3.Normalize();
         Page4.Normalize();
+        HwpxImageDpi = NormalizeImageDpi(HwpxImageDpi);
+        DocxImageDpi = NormalizeImageDpi(DocxImageDpi);
         HwpxJpegQuality = NormalizeJpegQuality(HwpxJpegQuality);
         DocxJpegQuality = NormalizeJpegQuality(DocxJpegQuality);
 
@@ -161,6 +172,11 @@ public sealed class ExportSettings
     public static int NormalizeJpegQuality(int quality)
     {
         return Math.Clamp(quality, 0, 100);
+    }
+
+    public static int NormalizeImageDpi(int dpi)
+    {
+        return Math.Clamp(dpi, MinImageDpi, MaxImageDpi);
     }
 
     private void MigrateLegacyCellSettings()

@@ -73,9 +73,19 @@ public sealed partial class MainWindow
             Stretch = Stretch.Uniform,
             Source = thumbnailService.TryGetCached(FileScanner.ToAbsolutePath(state.RootDir, relativePath))
         };
+        ConfigureImagePreviewTrigger(image, relativePath, () => SelectGroupForPreview(group.Id));
         _ = LoadThumbnailIntoAsync(image, relativePath);
 
-        var name = EditableFileNameHost(relativePath, 11, Brush("#1f252a"), new Thickness(0), nameWidth);
+        var name = EditableFileNameHost(
+            relativePath,
+            11,
+            Brush("#1f252a"),
+            new Thickness(0),
+            nameWidth,
+            onBeginEdit: () =>
+            {
+                SelectGroupForPreview(group.Id);
+            });
         SetPhotoPathToolTip(name, relativePath);
 
         var cardContent = new StackPanel
@@ -115,42 +125,6 @@ public sealed partial class MainWindow
             CornerRadius = new CornerRadius(0),
             Child = cellContent
         };
-        Point? previewStart = null;
-        card.PointerPressed += (_, args) =>
-        {
-            if (args.Source is Button or TextBox)
-            {
-                return;
-            }
-
-            var point = args.GetCurrentPoint(card);
-            if (!point.Properties.IsLeftButtonPressed)
-            {
-                return;
-            }
-
-            previewStart = point.Position;
-        };
-        card.PointerReleased += async (_, args) =>
-        {
-            if (previewStart is null || args.Source is Button or TextBox)
-            {
-                previewStart = null;
-                return;
-            }
-
-            var delta = args.GetPosition(card) - previewStart.Value;
-            previewStart = null;
-            if (Math.Abs(delta.X) >= 6 || Math.Abs(delta.Y) >= 6)
-            {
-                return;
-            }
-
-            selectedGroupId = group.Id;
-            RefreshDetail();
-            await ShowImagePreviewAsync(relativePath);
-            args.Handled = true;
-        };
         ConfigureDragSource(card, relativePath);
         ConfigurePhotoSlotDropTarget(card, group, phase, targetIndex);
         return card;
@@ -187,8 +161,18 @@ public sealed partial class MainWindow
         input.Resources["TextControlBorderBrushFocused"] = Brushes.Transparent;
         input.Resources["TextControlForeground"] = Brush("#1f252a");
         input.Resources["TextControlPlaceholderForeground"] = Brush("#b8c0c8");
-        input.TextChanged += (_, _) => group.SetLabel(phase, index, input.Text ?? string.Empty);
-        input.LostFocus += (_, _) => SaveToMetadata("사진 라벨을 저장했습니다", refreshAfterSave: false);
+        input.GotFocus += (_, _) => SelectGroupForPreview(group.Id);
+        input.PointerPressed += (_, args) =>
+        {
+            if (args.GetCurrentPoint(input).Properties.IsLeftButtonPressed)
+            {
+                SelectGroupForPreview(group.Id);
+            }
+        };
+        input.LostFocus += (_, _) =>
+        {
+            input.Text = group.LabelAt(phase, index);
+        };
         input.KeyDown += (_, args) =>
         {
             if (args.Key != Key.Enter)
@@ -196,8 +180,13 @@ public sealed partial class MainWindow
                 return;
             }
 
-            group.SetLabel(phase, index, input.Text ?? string.Empty);
-            SaveToMetadata("사진 라벨을 저장했습니다", refreshAfterSave: false);
+            var nextLabel = input.Text ?? string.Empty;
+            var changed = !string.Equals(group.LabelAt(phase, index), nextLabel, StringComparison.Ordinal);
+            group.SetLabel(phase, index, nextLabel);
+            if (changed)
+            {
+                SaveToMetadata("사진 라벨을 저장했습니다", refreshAfterSave: false);
+            }
             args.Handled = true;
         };
         return input;
@@ -217,6 +206,14 @@ public sealed partial class MainWindow
             Stretch = Stretch.Uniform,
             Source = thumbnailService.TryGetCached(FileScanner.ToAbsolutePath(state.RootDir, relativePath))
         };
+        ConfigureImagePreviewTrigger(image, relativePath, () =>
+        {
+            if (!assigned)
+            {
+                selectedPhoto = relativePath;
+                RefreshCenter();
+            }
+        });
         _ = LoadThumbnailIntoAsync(image, relativePath);
 
         var name = EditableFileNameHost(relativePath, 11, Brush("#1f252a"), new Thickness(0), nameWidth);
@@ -263,45 +260,45 @@ public sealed partial class MainWindow
             CornerRadius = new CornerRadius(6),
             Child = cardBody
         };
-        Point? previewStart = null;
-        card.PointerPressed += (_, args) =>
+        if (!assigned)
         {
-            if (args.Source is Button or TextBox)
-            {
-                return;
-            }
+            ConfigureDragSource(card, relativePath);
+        }
+        return card;
+    }
 
-            var point = args.GetCurrentPoint(card);
+    private void ConfigureImagePreviewTrigger(Image image, string relativePath, Action? beforePreview = null)
+    {
+        Point? previewStart = null;
+        image.PointerPressed += (_, args) =>
+        {
+            var point = args.GetCurrentPoint(image);
             if (!point.Properties.IsLeftButtonPressed)
             {
                 return;
             }
 
             previewStart = point.Position;
+            args.Handled = true;
         };
-        card.PointerReleased += async (_, args) =>
+        image.PointerReleased += async (_, args) =>
         {
-            if (previewStart is null || args.Source is Button or TextBox)
+            if (previewStart is null)
             {
-                previewStart = null;
                 return;
             }
 
-            var delta = args.GetPosition(card) - previewStart.Value;
+            var delta = args.GetPosition(image) - previewStart.Value;
             previewStart = null;
             if (Math.Abs(delta.X) >= 6 || Math.Abs(delta.Y) >= 6)
             {
                 return;
             }
 
+            beforePreview?.Invoke();
             await ShowImagePreviewAsync(relativePath);
             args.Handled = true;
         };
-        if (!assigned)
-        {
-            ConfigureDragSource(card, relativePath);
-        }
-        return card;
     }
 
     private void SetPhotoPathToolTip(Control control, string relativePath)
@@ -723,7 +720,15 @@ public sealed partial class MainWindow
         await Dispatcher.UIThread.InvokeAsync(() => image.Source = bitmap);
     }
 
-    private ContentControl EditableFileNameHost(string relativePath, double fontSize, IBrush foreground, Thickness margin, double width, TextAlignment textAlignment = TextAlignment.Center, bool showFullName = false)
+    private ContentControl EditableFileNameHost(
+        string relativePath,
+        double fontSize,
+        IBrush foreground,
+        Thickness margin,
+        double width,
+        TextAlignment textAlignment = TextAlignment.Center,
+        bool showFullName = false,
+        Action? onBeginEdit = null)
     {
         var host = new ContentControl
         {
@@ -734,7 +739,11 @@ public sealed partial class MainWindow
 
         void ShowDisplay()
         {
-            host.Content = FileNameDisplay(relativePath, fontSize, foreground, width, textAlignment, showFullName, () => ShowEditor());
+            host.Content = FileNameDisplay(relativePath, fontSize, foreground, width, textAlignment, showFullName, () =>
+            {
+                onBeginEdit?.Invoke();
+                ShowEditor();
+            });
         }
 
         void ShowEditor()

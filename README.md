@@ -65,7 +65,7 @@ The Windows build is published as a single executable, so you can usually send o
 
 ## Cache Location
 
-SiteSnap stores generated photo thumbnails in a disk cache. The `캐시 클리어` menu removes the cache below.
+SiteSnap stores generated photo thumbnails in a disk cache. The cache below is cleared automatically when the program exits.
 
 | OS | Thumbnail cache path |
 | --- | --- |

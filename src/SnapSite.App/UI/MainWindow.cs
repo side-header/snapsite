@@ -21,8 +21,8 @@ public sealed partial class MainWindow : Window
     private const int FixedHeaderFooterMarginMm = 0;
     private const int FixedOuterMarginMm = 0;
     private const int PhotoScaleLimit = 5;
-    private const string ProgramName = "SiteSnap";
-    private const string ProgramVersion = "v0.1.1";
+    private const string ProgramName = AppInfo.Name;
+    private const string ProgramVersion = AppInfo.Version;
     private const string GroupDragPrefix = "new-green-group:";
     private const string UnclassifiedRootKey = "__newgreen_unclassified_root__";
     private const double SettingsPreviewPaperWidth = 420;
@@ -80,6 +80,7 @@ public sealed partial class MainWindow : Window
         Background = Brushes.White;
 
         Content = BuildShell();
+        Closed += (_, _) => ClearThumbnailCacheOnExit();
         RefreshAll();
     }
 
@@ -180,7 +181,6 @@ public sealed partial class MainWindow : Window
             actions.Children.Add(MenuButton("종이 설정", async (_, _) => await ShowSettingsAsync()));
             actions.Children.Add(ExportMenuButton());
             actions.Children.Add(SaveMenuButton());
-            actions.Children.Add(MenuButton("캐시 클리어", (_, _) => ClearThumbnailCache()));
             actions.Children.Add(ExplorerToggleButton());
             actions.Children.Add(PreviewToggleButton());
 
@@ -482,6 +482,17 @@ public sealed partial class MainWindow : Window
         var group = state.AddGroup();
         selectedGroupId = group.Id;
         RefreshAll();
+    }
+
+    private void SelectGroupForPreview(string groupId)
+    {
+        if (string.IsNullOrWhiteSpace(groupId) || state.GroupById(groupId) is null)
+        {
+            return;
+        }
+
+        selectedGroupId = groupId;
+        RefreshDetail();
     }
 
     private static Button HeaderActionButton(string text, Action action)
@@ -1339,13 +1350,19 @@ public sealed partial class MainWindow : Window
                 return;
             }
 
-            group.Title = titleBox.Text?.Trim() ?? string.Empty;
-            SaveToMetadata("구역 이름을 저장했습니다", refreshAfterSave: false);
+            var nextTitle = titleBox.Text?.Trim() ?? string.Empty;
+            var changed = !string.Equals(group.Title, nextTitle, StringComparison.Ordinal);
+            group.Title = nextTitle;
+            if (changed)
+            {
+                SaveToMetadata("구역 이름을 저장했습니다", refreshAfterSave: false);
+            }
             titleHost.Content = CreateGroupTitleDisplay(group, BeginTitleEdit);
         }
 
         void BeginTitleEdit()
         {
+            SelectGroupForPreview(group.Id);
             var titleBox = new TextBox
             {
                 Text = group.Title,
@@ -1377,11 +1394,13 @@ public sealed partial class MainWindow : Window
                 titleBox.Focus();
                 titleBox.CaretIndex = titleBox.Text?.Length ?? 0;
             };
-            titleBox.TextChanged += (_, _) =>
+            titleBox.LostFocus += (_, _) =>
             {
-                group.Title = titleBox.Text ?? string.Empty;
+                if (ReferenceEquals(titleHost.Content, titleBox))
+                {
+                    titleHost.Content = CreateGroupTitleDisplay(group, BeginTitleEdit);
+                }
             };
-            titleBox.LostFocus += (_, _) => CommitTitle(titleBox);
             titleBox.KeyDown += (_, args) =>
             {
                 if (args.Key != Key.Enter)
@@ -1535,7 +1554,7 @@ public sealed partial class MainWindow : Window
         return root;
     }
 
-    private static Control CreateGroupTitleDisplay(PhotoGroup group, Action beginEdit)
+    private Control CreateGroupTitleDisplay(PhotoGroup group, Action beginEdit)
     {
         var hasTitle = !string.IsNullOrWhiteSpace(group.Title);
         var title = new TextBlock
@@ -1832,9 +1851,34 @@ public sealed partial class MainWindow : Window
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             Background = Brush("#1f252a")
         };
+        scrollViewer.GestureRecognizers.Add(new PinchGestureRecognizer());
+        void ApplyPointerZoom(Point pointerPosition, double nextZoom)
+        {
+            var previousZoom = Math.Max(0.001, slider.Value);
+            nextZoom = Math.Clamp(nextZoom, slider.Minimum, slider.Maximum);
+            if (Math.Abs(nextZoom - previousZoom) < 0.001)
+            {
+                return;
+            }
+
+            var imagePointX = (scrollViewer.Offset.X + pointerPosition.X) / previousZoom;
+            var imagePointY = (scrollViewer.Offset.Y + pointerPosition.Y) / previousZoom;
+            slider.Value = nextZoom;
+
+            Dispatcher.UIThread.Post(() =>
+            {
+                var maxX = Math.Max(0, image.Bounds.Width - scrollViewer.Viewport.Width);
+                var maxY = Math.Max(0, image.Bounds.Height - scrollViewer.Viewport.Height);
+                scrollViewer.Offset = new Vector(
+                    Math.Clamp(imagePointX * nextZoom - pointerPosition.X, 0, maxX),
+                    Math.Clamp(imagePointY * nextZoom - pointerPosition.Y, 0, maxY));
+            });
+        }
+
         var isPanning = false;
         var panStart = new Point();
         var panStartOffset = new Vector();
+        double? pinchStartZoom = null;
         scrollViewer.PointerPressed += (_, args) =>
         {
             if (!args.GetCurrentPoint(scrollViewer).Properties.IsLeftButtonPressed)
@@ -1850,12 +1894,12 @@ public sealed partial class MainWindow : Window
         };
         scrollViewer.PointerMoved += (_, args) =>
         {
+            var current = args.GetPosition(scrollViewer);
             if (!isPanning)
             {
                 return;
             }
 
-            var current = args.GetPosition(scrollViewer);
             var delta = current - panStart;
             scrollViewer.Offset = new Vector(
                 Math.Max(0, panStartOffset.X - delta.X),
@@ -1874,6 +1918,41 @@ public sealed partial class MainWindow : Window
             args.Handled = true;
         };
         scrollViewer.PointerCaptureLost += (_, _) => isPanning = false;
+        scrollViewer.PointerWheelChanged += (_, args) =>
+        {
+            var delta = args.Delta.Y;
+            if (Math.Abs(delta) < 0.001)
+            {
+                return;
+            }
+
+            var zoomFactor = Math.Pow(1.12, delta);
+            ApplyPointerZoom(args.GetPosition(scrollViewer), slider.Value * zoomFactor);
+            args.Handled = true;
+        };
+        Gestures.AddPointerTouchPadGestureMagnifyHandler(scrollViewer, (_, args) =>
+        {
+            var delta = Math.Abs(args.Delta.Y) > 0.001 ? args.Delta.Y : args.Delta.X;
+            if (Math.Abs(delta) < 0.001)
+            {
+                return;
+            }
+
+            var zoomFactor = Math.Clamp(1.0 + delta, 0.85, 1.15);
+            ApplyPointerZoom(args.GetPosition(scrollViewer), slider.Value * zoomFactor);
+            args.Handled = true;
+        });
+        Gestures.AddPinchHandler(scrollViewer, (_, args) =>
+        {
+            pinchStartZoom ??= slider.Value;
+            ApplyPointerZoom(args.ScaleOrigin, pinchStartZoom.Value * args.Scale);
+            args.Handled = true;
+        });
+        Gestures.AddPinchEndedHandler(scrollViewer, (_, args) =>
+        {
+            pinchStartZoom = null;
+            args.Handled = true;
+        });
 
         var zoomControls = new StackPanel
         {
@@ -1977,7 +2056,7 @@ public sealed partial class MainWindow : Window
         var version = ++autoSaveFeedbackVersion;
         isAutoSaveFeedbackVisible = true;
         RefreshTopBar();
-        await Task.Delay(1000);
+        await Task.Delay(500);
         if (version != autoSaveFeedbackVersion)
         {
             return;
@@ -1987,18 +2066,15 @@ public sealed partial class MainWindow : Window
         RefreshTopBar();
     }
 
-    private void ClearThumbnailCache()
+    private void ClearThumbnailCacheOnExit()
     {
         try
         {
-            var cacheRoot = thumbnailService.CacheRoot;
             thumbnailService.ClearCache();
-            RefreshAll();
-            status.Text = "캐시를 삭제했습니다: " + cacheRoot;
         }
-        catch (Exception ex)
+        catch
         {
-            _ = ShowErrorAsync(ex);
+            // Shutdown should not be interrupted by cache cleanup failures.
         }
     }
 
@@ -2094,6 +2170,8 @@ public sealed partial class MainWindow : Window
         TextBox LineSpacingPercent,
         TextBox FontFamily,
         CheckBox ShowPageNumber,
+        Slider ImageDpi,
+        TextBlock ImageDpiValue,
         Slider JpegQuality,
         TextBlock JpegQualityValue)
     {
@@ -2166,7 +2244,7 @@ public sealed partial class MainWindow : Window
         {
             Title = ProgramName + " 정보",
             Width = 520,
-            Height = 250,
+            Height = 325,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Content = new StackPanel
             {
@@ -2198,7 +2276,7 @@ public sealed partial class MainWindow : Window
         var table = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("110,*"),
-            RowDefinitions = new RowDefinitions("36,36,64")
+            RowDefinitions = new RowDefinitions("36,36,126")
         };
 
         AddInfoCell(table, "프로그램", 0, 0, header: true);
@@ -2206,12 +2284,17 @@ public sealed partial class MainWindow : Window
         AddInfoCell(table, "버전", 0, 1, header: true);
         AddInfoCell(table, ProgramVersion, 1, 1);
         AddInfoCell(table, "캐시 위치", 0, 2, header: true);
-        AddInfoCell(table, thumbnailService.CacheRoot, 1, 2);
+        AddInfoCell(table, CacheInfoContent(thumbnailService.CacheRoot), 1, 2);
 
         return table;
     }
 
     private static void AddInfoCell(Grid table, string text, int column, int row, bool header = false)
+    {
+        AddInfoCell(table, InfoText(text, header), column, row, header);
+    }
+
+    private static void AddInfoCell(Grid table, Control content, int column, int row, bool header = false)
     {
         var cell = new Border
         {
@@ -2219,17 +2302,60 @@ public sealed partial class MainWindow : Window
             BorderBrush = Brush("#d8dde2"),
             BorderThickness = new Thickness(0.7),
             Padding = new Thickness(10, 6),
-            Child = new TextBlock
-            {
-                Text = text,
-                FontSize = 13,
-                FontWeight = header ? FontWeight.Bold : FontWeight.Normal,
-                Foreground = header ? Brush("#333") : Brush("#222"),
-                TextWrapping = TextWrapping.Wrap,
-                VerticalAlignment = VerticalAlignment.Center
-            }
+            Child = content
         };
         AddToGrid(table, cell, column, row);
+    }
+
+    private static SelectableTextBlock InfoText(string text, bool header = false, IBrush? foreground = null)
+    {
+        return new SelectableTextBlock
+        {
+            Text = text,
+            FontSize = 13,
+            FontWeight = header ? FontWeight.Bold : FontWeight.Normal,
+            Foreground = foreground ?? (header ? Brush("#333") : Brush("#222")),
+            TextWrapping = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+    }
+
+    private Control CacheInfoContent(string cacheRoot)
+    {
+        var clearCache = new Button
+        {
+            Content = "캐시 클리어",
+            MinWidth = 92,
+            Height = 28,
+            Padding = new Thickness(12, 0),
+            HorizontalAlignment = HorizontalAlignment.Left
+        };
+        clearCache.Click += (_, _) =>
+        {
+            try
+            {
+                thumbnailService.ClearCache();
+                RefreshAll();
+                status.Text = "캐시를 삭제했습니다: " + cacheRoot;
+                clearCache.Content = "삭제 완료";
+            }
+            catch (Exception ex)
+            {
+                _ = ShowErrorAsync(ex);
+            }
+        };
+
+        return new StackPanel
+        {
+            Spacing = 6,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                InfoText(cacheRoot),
+                InfoText("프로그램 종료 시 항상 캐시 내용은 자동으로 삭제됩니다.", foreground: Brush("#8a939b")),
+                clearCache
+            }
+        };
     }
 
     private async Task ShowErrorAsync(Exception ex)
