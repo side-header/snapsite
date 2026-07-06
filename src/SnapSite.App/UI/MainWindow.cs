@@ -2244,7 +2244,7 @@ public sealed partial class MainWindow : Window
         {
             Title = ProgramName + " 정보",
             Width = 640,
-            Height = 330,
+            Height = 295,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Content = new StackPanel
             {
@@ -2276,7 +2276,7 @@ public sealed partial class MainWindow : Window
         var table = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("110,*,130"),
-            RowDefinitions = new RowDefinitions("36,36,96")
+            RowDefinitions = new RowDefinitions("36,36,64")
         };
 
         AddInfoCell(table, "프로그램", 0, 0, header: true);
@@ -2341,10 +2341,10 @@ public sealed partial class MainWindow : Window
     {
         var label = new TextBlock
         {
-            Text = "캐시 클리어",
+            Text = "캐시 삭제",
             FontSize = 13,
             FontWeight = FontWeight.Bold,
-            Foreground = Brush("#1f252a"),
+            Foreground = Brush("#0b5cad"),
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
         };
@@ -2363,12 +2363,12 @@ public sealed partial class MainWindow : Window
         clearCache.PointerEntered += (_, _) =>
         {
             clearCache.Background = Brush("#eef2f6");
-            label.Foreground = Brush("#0b5cad");
+            label.Foreground = Brush("#1f252a");
         };
         clearCache.PointerExited += (_, _) =>
         {
             clearCache.Background = Brushes.Transparent;
-            label.Foreground = Brush("#1f252a");
+            label.Foreground = Brush("#0b5cad");
         };
         clearCache.PointerPressed += (_, args) =>
         {
