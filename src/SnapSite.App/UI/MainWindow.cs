@@ -2332,7 +2332,7 @@ public sealed partial class MainWindow : Window
             Children =
             {
                 InfoText(cacheRoot),
-                InfoText("프로그램 종료 시 항상 캐시 내용은 자동으로 삭제됩니다.", foreground: Brush("#8a939b"))
+                InfoText("프로그램 실행 시 항상 캐시가 만들어지고, 종료 시 항상 캐시 내용은 자동으로 삭제됩니다.", foreground: Brush("#8a939b"))
             }
         };
     }
