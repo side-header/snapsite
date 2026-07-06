@@ -2337,18 +2337,49 @@ public sealed partial class MainWindow : Window
         };
     }
 
-    private Button CacheClearButton(string cacheRoot)
+    private Control CacheClearButton(string cacheRoot)
     {
-        var clearCache = new Button
+        var label = new TextBlock
         {
-            Content = "캐시 클리어",
-            MinWidth = 110,
-            Height = 32,
-            Padding = new Thickness(14, 0),
+            Text = "캐시 클리어",
+            FontSize = 13,
+            FontWeight = FontWeight.Bold,
+            Foreground = Brush("#1f252a"),
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
         };
-        clearCache.Click += (_, _) =>
+        var clearCache = new Border
+        {
+            MinWidth = 110,
+            Height = 32,
+            Padding = new Thickness(12, 0),
+            Background = Brushes.Transparent,
+            CornerRadius = new CornerRadius(4),
+            Cursor = new Cursor(StandardCursorType.Hand),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Child = label
+        };
+        clearCache.PointerEntered += (_, _) =>
+        {
+            clearCache.Background = Brush("#eef2f6");
+            label.Foreground = Brush("#0b5cad");
+        };
+        clearCache.PointerExited += (_, _) =>
+        {
+            clearCache.Background = Brushes.Transparent;
+            label.Foreground = Brush("#1f252a");
+        };
+        clearCache.PointerPressed += (_, args) =>
+        {
+            if (!args.GetCurrentPoint(clearCache).Properties.IsLeftButtonPressed)
+            {
+                return;
+            }
+
+            args.Handled = true;
+        };
+        clearCache.PointerReleased += (_, args) =>
         {
             try
             {
@@ -2360,6 +2391,7 @@ public sealed partial class MainWindow : Window
             {
                 _ = ShowErrorAsync(ex);
             }
+            args.Handled = true;
         };
 
         return clearCache;
