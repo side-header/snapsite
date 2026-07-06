@@ -2253,6 +2253,7 @@ public sealed partial class MainWindow : Window
                 Children =
                 {
                     VersionInfoTable(),
+                    CacheClearButton(thumbnailService.CacheRoot),
                     new Button
                     {
                         Content = "확인",
@@ -2322,13 +2323,28 @@ public sealed partial class MainWindow : Window
 
     private Control CacheInfoContent(string cacheRoot)
     {
+        return new StackPanel
+        {
+            Spacing = 6,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
+            {
+                InfoText(cacheRoot),
+                InfoText("프로그램 종료 시 항상 캐시 내용은 자동으로 삭제됩니다.", foreground: Brush("#8a939b"))
+            }
+        };
+    }
+
+    private Button CacheClearButton(string cacheRoot)
+    {
         var clearCache = new Button
         {
             Content = "캐시 클리어",
-            MinWidth = 92,
-            Height = 28,
-            Padding = new Thickness(12, 0),
-            HorizontalAlignment = HorizontalAlignment.Left
+            MinWidth = 110,
+            Height = 32,
+            Padding = new Thickness(14, 0),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(120, -4, 0, 0)
         };
         clearCache.Click += (_, _) =>
         {
@@ -2345,17 +2361,7 @@ public sealed partial class MainWindow : Window
             }
         };
 
-        return new StackPanel
-        {
-            Spacing = 6,
-            VerticalAlignment = VerticalAlignment.Center,
-            Children =
-            {
-                InfoText(cacheRoot),
-                InfoText("프로그램 종료 시 항상 캐시 내용은 자동으로 삭제됩니다.", foreground: Brush("#8a939b")),
-                clearCache
-            }
-        };
+        return clearCache;
     }
 
     private async Task ShowErrorAsync(Exception ex)
