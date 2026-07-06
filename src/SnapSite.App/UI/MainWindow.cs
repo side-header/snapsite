@@ -2243,8 +2243,8 @@ public sealed partial class MainWindow : Window
         var dialog = new Window
         {
             Title = ProgramName + " 정보",
-            Width = 520,
-            Height = 380,
+            Width = 640,
+            Height = 330,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Content = new StackPanel
             {
@@ -2253,7 +2253,6 @@ public sealed partial class MainWindow : Window
                 Children =
                 {
                     VersionInfoTable(),
-                    CacheClearButton(thumbnailService.CacheRoot),
                     new Button
                     {
                         Content = "확인",
@@ -2276,16 +2275,19 @@ public sealed partial class MainWindow : Window
     {
         var table = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("110,*"),
-            RowDefinitions = new RowDefinitions("36,36,180")
+            ColumnDefinitions = new ColumnDefinitions("110,*,130"),
+            RowDefinitions = new RowDefinitions("36,36,96")
         };
 
         AddInfoCell(table, "프로그램", 0, 0, header: true);
         AddInfoCell(table, ProgramName, 1, 0);
+        AddInfoCell(table, string.Empty, 2, 0);
         AddInfoCell(table, "버전", 0, 1, header: true);
         AddInfoCell(table, ProgramVersion, 1, 1);
+        AddInfoCell(table, string.Empty, 2, 1);
         AddInfoCell(table, "캐시 위치", 0, 2, header: true);
         AddInfoCell(table, CacheInfoContent(thumbnailService.CacheRoot), 1, 2);
+        AddInfoCell(table, CacheClearButton(thumbnailService.CacheRoot), 2, 2);
 
         return table;
     }
@@ -2343,8 +2345,8 @@ public sealed partial class MainWindow : Window
             MinWidth = 110,
             Height = 32,
             Padding = new Thickness(14, 0),
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Margin = new Thickness(120, -4, 0, 0)
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
         };
         clearCache.Click += (_, _) =>
         {
@@ -2353,7 +2355,6 @@ public sealed partial class MainWindow : Window
                 thumbnailService.ClearCache();
                 RefreshAll();
                 status.Text = "캐시를 삭제했습니다: " + cacheRoot;
-                clearCache.Content = "삭제 완료";
             }
             catch (Exception ex)
             {
