@@ -279,7 +279,6 @@ public sealed partial class MainWindow
             }
 
             previewStart = point.Position;
-            args.Handled = true;
         };
         image.PointerReleased += async (_, args) =>
         {
