@@ -4,7 +4,7 @@
 
 ```json
 {
-  "appVersion": "v0.1.2",
+  "appVersion": "v0.1.3",
   "rootDir": "/Users/example/photos",
   "groups": [
     {
