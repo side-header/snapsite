@@ -2244,7 +2244,7 @@ public sealed partial class MainWindow : Window
         {
             Title = ProgramName + " 정보",
             Width = 520,
-            Height = 325,
+            Height = 380,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             Content = new StackPanel
             {
@@ -2276,7 +2276,7 @@ public sealed partial class MainWindow : Window
         var table = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("110,*"),
-            RowDefinitions = new RowDefinitions("36,36,126")
+            RowDefinitions = new RowDefinitions("36,36,180")
         };
 
         AddInfoCell(table, "프로그램", 0, 0, header: true);
