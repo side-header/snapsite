@@ -12,18 +12,18 @@ public sealed partial class DocumentExporter
 
     private sealed record ImagePixelSize(int Width, int Height)
     {
-        public static ImagePixelSize FromDocxTwips(int widthTwips, int heightTwips)
+        public static ImagePixelSize FromDocxTwips(int widthTwips, int heightTwips, int imageDpi)
         {
             return new ImagePixelSize(
-                Math.Max(1, (int)Math.Round(widthTwips / 1440.0 * ExportImageDpi)),
-                Math.Max(1, (int)Math.Round(heightTwips / 1440.0 * ExportImageDpi)));
+                Math.Max(1, (int)Math.Round(widthTwips / 1440.0 * imageDpi)),
+                Math.Max(1, (int)Math.Round(heightTwips / 1440.0 * imageDpi)));
         }
 
-        public static ImagePixelSize FromHwpxUnits(int widthUnits, int heightUnits)
+        public static ImagePixelSize FromHwpxUnits(int widthUnits, int heightUnits, int imageDpi)
         {
             return new ImagePixelSize(
-                Math.Max(1, (int)Math.Round(widthUnits / HwpxUnitsPerMillimeter / 25.4 * ExportImageDpi)),
-                Math.Max(1, (int)Math.Round(heightUnits / HwpxUnitsPerMillimeter / 25.4 * ExportImageDpi)));
+                Math.Max(1, (int)Math.Round(widthUnits / HwpxUnitsPerMillimeter / 25.4 * imageDpi)),
+                Math.Max(1, (int)Math.Round(heightUnits / HwpxUnitsPerMillimeter / 25.4 * imageDpi)));
         }
     }
 

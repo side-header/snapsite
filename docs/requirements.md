@@ -46,7 +46,6 @@ The explorer and preview areas can be toggled from the top menu. The central wor
   - `.hwpx 로 내보내기`: exports only HWPX.
   - `.docx 로 내보내기`: exports only DOCX.
 - `저장하기`: saves the current manifest. While the save feedback is visible, the button text is `저장 중`.
-- `캐시 클리어`: clears the SiteSnap thumbnail cache.
 - Left-side panel icon: toggles the explorer area.
 - Right-side panel icon: toggles the preview area.
 
@@ -56,7 +55,8 @@ The `공종 추가` action belongs to the classified-area header and is visible 
 
 - The information button is placed to the left of `폴더 열기`.
 - The dialog shows the program version and thumbnail cache location.
-- The program version is hard-coded as `v0.1.1`.
+- The dialog includes a `캐시 클리어` button below the cache location so the user can clear the thumbnail cache manually.
+- The program version is hard-coded as `v0.1.2`.
 - The dialog content is shown as a compact table and closes with an `확인` button.
 
 ## Unclassified Photo Area
@@ -126,6 +126,8 @@ The `종이 설정` dialog contains three top-level tabs:
   - paragraph line spacing
   - font family
   - page-number visibility
+  - photo DPI from `72` to `600`, defaulting to `300`
+  - JPEG photo quality from `0` to `100`, defaulting to `85`
   - first-page title, subtitle, company text, and font sizes
   - page-2-onward title, subtitle, and font sizes
 - The preview is informational. It shows text placement and approximate sizing, but final exported layout can differ.
@@ -157,17 +159,23 @@ The `종이 설정` dialog contains three top-level tabs:
 
 The manifest stores:
 
+- `appVersion`
 - `rootDir`
 - `groups`
 - per-phase photo paths and labels
 - `cntPerPage`
 - `exportSettings.page3`
 - `exportSettings.page4`
+- `exportSettings.hwpxImageDpi`
+- `exportSettings.docxImageDpi`
+- `exportSettings.hwpxJpegQuality`
+- `exportSettings.docxJpegQuality`
 - `paperTemplates.hwpx`
 - `paperTemplates.docx`
 
 Legacy fields are normalized on load:
 
+- Missing `appVersion` is written as the current app version on the next save.
 - Old single-format export settings are migrated into `page3` and `page4`.
 - Legacy cell-margin objects are normalized to the current shape.
 - Old `paperTemplate` content is copied into both `paperTemplates.hwpx` and `paperTemplates.docx` when no split template exists.
@@ -202,7 +210,7 @@ Legacy fields are normalized on load:
 - The app does not decode all original images at full size for card display.
 - Thumbnails are decoded to a fixed thumbnail width and cached on disk.
 - Cache keys include the absolute path, last-write time, and file size.
-- `캐시 클리어` clears only the SiteSnap thumbnail cache.
+- The thumbnail cache is also cleared automatically when the program exits.
 
 Cache locations:
 

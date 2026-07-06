@@ -4,6 +4,9 @@ namespace NewGreen.Domain;
 
 public sealed class AppState
 {
+    [JsonPropertyName("appVersion")]
+    public string AppVersion { get; set; } = AppInfo.Version;
+
     [JsonPropertyName("rootDir")]
     public string RootDir { get; set; } = string.Empty;
 

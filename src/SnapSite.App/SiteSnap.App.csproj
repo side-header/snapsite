@@ -7,8 +7,8 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>SiteSnap</AssemblyName>
     <RootNamespace>NewGreen</RootNamespace>
-    <Version>0.1.1</Version>
-    <InformationalVersion>v0.1.1</InformationalVersion>
+    <Version>0.1.2</Version>
+    <InformationalVersion>v0.1.2</InformationalVersion>
   </PropertyGroup>
 
   <ItemGroup>

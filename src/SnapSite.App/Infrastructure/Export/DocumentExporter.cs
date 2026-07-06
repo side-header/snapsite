@@ -44,8 +44,6 @@ public sealed partial class DocumentExporter
     private const int HwpxFixedOuterMarginUnits = 0;
     private const int HwpxFixedPhotoOuterMarginUnits = 0;
     private const double HwpxUnitsPerMillimeter = HwpxPageWidth / 210.0;
-    private const double ExportImageDpi = 150.0;
-
     public void ExportAll(string rootDir, AppState state)
     {
         var outDir = Path.Combine(rootDir, "exports");
@@ -359,6 +357,7 @@ public sealed partial class DocumentExporter
     private static Dictionary<ExportImage, ImagePixelSize> BuildDocxImagePixelSizes(AppState state, List<ExportImage> images)
     {
         var sizes = new Dictionary<ExportImage, ImagePixelSize>();
+        var imageDpi = ExportSettings.NormalizeImageDpi(state.ExportSettings.DocxImageDpi);
         foreach (var page in BuildExportPages(state, images))
         {
             var settings = state.ExportSettings.SettingsFor(page.CntPerPage);
@@ -366,7 +365,7 @@ public sealed partial class DocumentExporter
             foreach (var item in page.Items)
             {
                 var size = DocxImageSizeTwips(metrics.ImageWidth, metrics.RowHeight, CellLayout.From(settings.DocxPhoto!));
-                sizes[item.Image] = ImagePixelSize.FromDocxTwips(size.Width, size.Height);
+                sizes[item.Image] = ImagePixelSize.FromDocxTwips(size.Width, size.Height, imageDpi);
             }
         }
 
@@ -381,6 +380,7 @@ public sealed partial class DocumentExporter
     private static Dictionary<ExportImage, ImagePixelSize> BuildHwpxImagePixelSizes(AppState state, List<ExportImage> images)
     {
         var sizes = new Dictionary<ExportImage, ImagePixelSize>();
+        var imageDpi = ExportSettings.NormalizeImageDpi(state.ExportSettings.HwpxImageDpi);
         foreach (var page in BuildExportPages(state, images))
         {
             var settings = state.ExportSettings.SettingsFor(page.CntPerPage);
@@ -388,7 +388,7 @@ public sealed partial class DocumentExporter
             foreach (var item in page.Items)
             {
                 var size = HwpxImageSize(metrics.ImageWidth, metrics.RowHeight, CellLayout.From(settings.HwpxPhoto!));
-                sizes[item.Image] = ImagePixelSize.FromHwpxUnits(size.Width, size.Height);
+                sizes[item.Image] = ImagePixelSize.FromHwpxUnits(size.Width, size.Height, imageDpi);
             }
         }
 
