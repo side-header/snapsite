@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SiteSnap.Infrastructure</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../SiteSnap.Domain/SiteSnap.Domain.csproj" />
+    <ProjectReference Include="../SiteSnap.Application/SiteSnap.Application.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SkiaSharp" Version="2.88.9" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources/base.hwpx" />
+  </ItemGroup>
+</Project>

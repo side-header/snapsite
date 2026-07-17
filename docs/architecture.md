@@ -2,44 +2,35 @@
 
 ## Overview
 
-SiteSnap is a cross-platform desktop application built with C#, .NET 10, and Avalonia UI. The user-facing product name is SiteSnap. The historical project folder and namespace still use `NewGreen` internally.
+SiteSnap is a cross-platform desktop application built with C#, .NET 10, and Avalonia UI. The codebase uses a multi-project DDD structure with explicit Domain, Application, Infrastructure, and Presentation boundaries.
 
 The app scans a selected base folder, keeps classification state in memory, saves normalized JSON state to `sitesnape_manifest.json`, and exports photo-sheet documents as HWPX or DOCX.
 
 ## Project Layout
 
 ```text
-src/SnapSite.App/
-  SiteSnap.App.csproj
-  Program.cs
-  App.cs
-  app.manifest
-  Resources/
-    base.hwpx
-  Domain/
-    AppState.cs
-    ExportPageSettings.cs
-    ExportSettings.cs
-    LayoutSettings.cs
-    PaperTemplateSettings.cs
-    Phase.cs
-    PhotoGroup.cs
-    ScannedFiles.cs
-  Infrastructure/
-    Export/
-      DocumentExporter.cs
-      DocumentExporter.Models.cs
-    FileSystem/
-      FileScanner.cs
-    Persistence/
-      MetadataStore.cs
-    Thumbnails/
-      ThumbnailService.cs
-  UI/
-    MainWindow.cs
-    MainWindow.Photos.cs
-    MainWindow.Settings.cs
+src/
+  SiteSnap.Domain/          # aggregates, entities, value/settings models
+  SiteSnap.Application/     # use cases and infrastructure ports
+  SiteSnap.Infrastructure/  # scanning, persistence, DOCX/HWPX adapters
+  SnapSite.App/             # Avalonia Presentation and composition root
+    Presentation/
+      MainWindow/
+      Services/             # Avalonia-specific thumbnail service
+tests/
+  SiteSnap.CharacterizationTests/
+SiteSnap.slnx
 ```
+
+Project references enforce this direction:
+
+```text
+SiteSnap.App ───────► SiteSnap.Application ───────► SiteSnap.Domain
+      │                       ▲
+      └────────────► SiteSnap.Infrastructure ──────┘
+```
+
+`App.cs` is the composition root. Presentation code consumes Application services; concrete file-system, persistence, and export adapters are created only at startup.
 
 Supporting scripts:
 
@@ -52,7 +43,7 @@ scripts/publish-windows-x64.ps1
 
 ## Application Startup
 
-`Program.cs` starts the Avalonia desktop lifetime. `App.cs` configures the Avalonia application. `MainWindow` builds the UI in code rather than XAML.
+`Program.cs` starts the Avalonia desktop lifetime. `App.cs` configures Avalonia and injects `WorkspaceService` and `DocumentExportService` into `MainWindow`. `MainWindow` builds the UI in code rather than XAML.
 
 The app uses one main window and keeps the active `AppState`, current `ScanResult`, selected group, selected photo, zoom levels, and panel visibility in the window instance.
 
@@ -159,7 +150,7 @@ Sanitization removes ignored paths, missing files, and duplicate photo paths. It
 
 `FileScanner` scans the selected base folder.
 
-- Maximum folder depth is currently `3`, controlled by `MaxFolderDepth`.
+- Maximum folder depth is currently `7`, controlled by `MaxFolderDepth`.
 - Ignored top-level directory names are `exports` and `.newgreen-cache`.
 - Supported photo extensions are `.jpg`, `.jpeg`, `.png`, `.gif`, `.bmp`, `.webp`, `.tif`, and `.tiff`.
 - Results are sorted case-insensitively by relative path.
@@ -188,11 +179,13 @@ Thumbnails are stored under the `thumbnails` child folder. `ClearCache()` clears
 
 ## UI Architecture
 
-`MainWindow` is split into three partial files:
+`MainWindow` remains a Presentation partial class split into three behavior-preserving files:
 
-- `MainWindow.cs`: shell layout, top menu, panels, state loading, save, export, dialogs
-- `MainWindow.Photos.cs`: photo cards, drag and drop, preview, path tooltip, image interactions
-- `MainWindow.Settings.cs`: paper settings dialog, form controls, layout previews
+- `Presentation/MainWindow/MainWindow.cs`: shell layout, top menu, panels, state loading, save, export, dialogs
+- `Presentation/MainWindow/MainWindow.Photos.cs`: photo cards, drag and drop, preview and image interactions
+- `Presentation/MainWindow/MainWindow.Settings.cs`: paper settings dialog, form controls, layout previews
+
+Avalonia-specific thumbnail caching stays in Presentation because its public API returns `Bitmap`. File scanning, JSON persistence, and document export are Infrastructure adapters behind Application interfaces.
 
 ### Top Bar
 

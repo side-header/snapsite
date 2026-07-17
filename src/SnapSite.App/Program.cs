@@ -1,6 +1,6 @@
 using Avalonia;
 
-namespace NewGreen;
+namespace SiteSnap.Presentation;
 
 internal static class Program
 {

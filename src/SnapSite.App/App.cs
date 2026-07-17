@@ -1,11 +1,15 @@
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Themes.Fluent;
-using NewGreen.UI;
+using SiteSnap.Application;
+using SiteSnap.Infrastructure.Export;
+using SiteSnap.Infrastructure.FileSystem;
+using SiteSnap.Infrastructure.Persistence;
+using SiteSnap.Presentation;
 
-namespace NewGreen;
+namespace SiteSnap.Presentation;
 
-public sealed class App : Application
+public sealed class App : Avalonia.Application
 {
     public override void Initialize()
     {
@@ -16,7 +20,9 @@ public sealed class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            desktop.MainWindow = new MainWindow();
+            var workspaceService = new WorkspaceService(new FileScanner(), new MetadataStore());
+            var exportService = new DocumentExportService(new DocumentExporter());
+            desktop.MainWindow = new MainWindow(workspaceService, exportService);
         }
 
         base.OnFrameworkInitializationCompleted();

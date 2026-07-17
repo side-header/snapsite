@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>SiteSnap</AssemblyName>
-    <RootNamespace>NewGreen</RootNamespace>
+    <RootNamespace>SiteSnap.Presentation</RootNamespace>
     <Version>0.1.4</Version>
     <InformationalVersion>0.1.4</InformationalVersion>
   </PropertyGroup>
@@ -19,6 +19,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="Resources/base.hwpx" />
+    <ProjectReference Include="../SiteSnap.Domain/SiteSnap.Domain.csproj" />
+    <ProjectReference Include="../SiteSnap.Application/SiteSnap.Application.csproj" />
+    <ProjectReference Include="../SiteSnap.Infrastructure/SiteSnap.Infrastructure.csproj" />
   </ItemGroup>
 </Project>
