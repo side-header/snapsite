@@ -21,6 +21,7 @@ public sealed partial class MainWindow : Window
     private const int FixedHeaderFooterMarginMm = 0;
     private const int FixedOuterMarginMm = 0;
     private const int PhotoScaleLimit = 5;
+    private const double PhotoMetadataFontSize = 14;
     private const string ProgramName = AppInfo.Name;
     private const string ProgramVersion = AppInfo.Version;
     private const string GroupDragPrefix = "new-green-group:";
@@ -90,8 +91,13 @@ public sealed partial class MainWindow : Window
     private Border? unclassifiedSelectionAction;
     private TextBlock? unclassifiedSelectionActionSummary;
     private TextBlock? unclassifiedSelectionActionDetails;
+    private StackPanel? unclassifiedSelectionActionDetailsContainer;
+    private StackPanel? unclassifiedRule1InsertionRow;
+    private ComboBox? unclassifiedRule1InsertionComboBox;
     private TextBlock? unclassifiedSelectionActionToggleIcon;
     private Button? unclassifiedSelectionActionButton;
+    private int? rule1GroupInsertionIndex;
+    private bool isRefreshingRule1InsertionOptions;
     private ScrollViewer? unclassifiedTreeScrollViewer;
     private Control? unclassifiedTreeContent;
     private ScrollViewer? classifiedScrollViewer;
@@ -99,6 +105,8 @@ public sealed partial class MainWindow : Window
     private readonly Dictionary<string, TextBlock> unclassifiedAssignedGroupNumberTexts = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<(string RelativePath, Control Card)> renderedUnclassifiedPhotoCards = [];
     private readonly Dictionary<string, TextBlock> unclassifiedFolderStatusLabels = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Action<bool>> unclassifiedFolderGlyphPalettes = new(StringComparer.OrdinalIgnoreCase);
+    private string? hoveredUnclassifiedFolderKey;
 
     public MainWindow(WorkspaceService workspaceService, DocumentExportService documentExportService)
     {
@@ -505,10 +513,6 @@ public sealed partial class MainWindow : Window
             panel.Children.Add(HeaderActionButton("↓ 빈 페이지", AddBlankPage));
             panel.Children.Add(HeaderActionButton("↓ 공종 페이지", AddPhotoGroup));
         }
-        else
-        {
-            panel.Children.Add(HeaderActionButton("규칙1 기준 선택", SelectPhotosByRule1));
-        }
         panel.Children.Add(HeaderZoomButton("⌕−", isClassified, -1));
         panel.Children.Add(HeaderZoomButton("⌕+", isClassified, 1));
         panel.IsVisible = !string.IsNullOrWhiteSpace(state.RootDir);
@@ -611,6 +615,19 @@ public sealed partial class MainWindow : Window
             () => RevealCreatedClassifiedGroups(createdGroupIds, alignNearUpperCenter),
             TimeSpan.FromMilliseconds(16),
             DispatcherPriority.Render);
+    }
+
+    private void ScheduleHighlightCreatedClassifiedGroups(IReadOnlyList<string> groupIds)
+    {
+        var createdGroupIds = groupIds.ToList();
+        DispatcherTimer.RunOnce(() =>
+        {
+            var highlights = createdGroupIds
+                .Where(classifiedGroupHighlightViews.ContainsKey)
+                .Select(groupId => classifiedGroupHighlightViews[groupId])
+                .ToList();
+            HighlightCreatedClassifiedPages(highlights);
+        }, TimeSpan.FromMilliseconds(16), DispatcherPriority.Render);
     }
 
     private void RevealCreatedClassifiedGroups(
@@ -926,6 +943,10 @@ public sealed partial class MainWindow : Window
         {
             classifiedHeaderActions.IsVisible = hasRoot;
         }
+        if (unclassifiedRule1InsertionRow?.IsVisible == true)
+        {
+            RefreshRule1InsertionOptions();
+        }
     }
 
     private void RefreshTopBar()
@@ -1214,39 +1235,100 @@ public sealed partial class MainWindow : Window
         };
     }
 
-    private static Control FolderGlyph()
+    private static (Grid Icon, Action<bool> ApplyColors) CreateFolderGlyph()
     {
         var icon = new Grid
         {
             Width = 24,
             Height = 20,
-            Margin = new Thickness(0, 0, 2, 0)
+            Margin = new Thickness(0, 0, 2, 0),
+            Background = Brushes.Transparent
         };
 
-        icon.Children.Add(new Border
+        var tab = new Border
         {
             Width = 10,
             Height = 5,
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Top,
             Margin = new Thickness(3, 2, 0, 0),
-            Background = Brush("#74c9ec"),
+            Background = Brush("#e7c980"),
             CornerRadius = new CornerRadius(2, 2, 0, 0)
-        });
-        icon.Children.Add(new Border
+        };
+        var body = new Border
         {
             Width = 20,
             Height = 13,
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Top,
             Margin = new Thickness(2, 6, 0, 0),
-            Background = Brush("#42b4df"),
-            BorderBrush = Brush("#2e9ec8"),
+            Background = Brush("#d8b56a"),
+            BorderBrush = Brush("#b8954f"),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(2)
-        });
+        };
+        icon.Children.Add(tab);
+        icon.Children.Add(body);
 
+        void ApplyFolderColors(bool highlighted)
+        {
+            tab.Background = Brush(highlighted ? "#74c9ec" : "#e7c980");
+            body.Background = Brush(highlighted ? "#42b4df" : "#d8b56a");
+            body.BorderBrush = Brush(highlighted ? "#2e9ec8" : "#b8954f");
+        }
+
+        return (icon, ApplyFolderColors);
+    }
+
+    private static Control FolderGlyph()
+    {
+        return CreateFolderGlyph().Icon;
+    }
+
+    private Control Rule1FolderGlyph(string folderKey)
+    {
+        var (icon, applyColors) = CreateFolderGlyph();
+        unclassifiedFolderGlyphPalettes[folderKey] = applyColors;
+        icon.Cursor = new Cursor(StandardCursorType.Hand);
+        icon.PointerEntered += (_, _) => ApplyUnclassifiedFolderGlyphHover(folderKey);
+        icon.PointerExited += (_, _) => ApplyUnclassifiedFolderGlyphHover(folderKey: null);
+        icon.PointerPressed += (_, args) =>
+        {
+            if (!args.GetCurrentPoint(icon).Properties.IsLeftButtonPressed)
+            {
+                return;
+            }
+
+            TogglePhotosByRule1Folder(folderKey);
+            args.Handled = true;
+        };
         return icon;
+    }
+
+    private void ApplyUnclassifiedFolderGlyphHover(string? folderKey)
+    {
+        hoveredUnclassifiedFolderKey = folderKey;
+        RefreshUnclassifiedFolderGlyphColors();
+    }
+
+    private void RefreshUnclassifiedFolderGlyphColors()
+    {
+        var hoveredFolderPath = string.Equals(hoveredUnclassifiedFolderKey, UnclassifiedRootKey, StringComparison.Ordinal)
+            ? string.Empty
+            : hoveredUnclassifiedFolderKey;
+        foreach (var (candidateKey, applyColors) in unclassifiedFolderGlyphPalettes)
+        {
+            var candidateFolderPath = string.Equals(candidateKey, UnclassifiedRootKey, StringComparison.Ordinal)
+                ? string.Empty
+                : candidateKey;
+            var isSelected = FolderPhotoSelection.HasSelectionInFolder(
+                selectedPhotos,
+                candidateFolderPath);
+            var isHovered = hoveredUnclassifiedFolderKey is not null && WorkspacePath.IsSameOrDescendantFolder(
+                candidateFolderPath,
+                hoveredFolderPath ?? string.Empty);
+            applyColors(isSelected || isHovered);
+        }
     }
 
     private static Control FileGlyph()
@@ -1301,10 +1383,15 @@ public sealed partial class MainWindow : Window
         unclassifiedAssignedGroupNumberTexts.Clear();
         renderedUnclassifiedPhotoCards.Clear();
         unclassifiedFolderStatusLabels.Clear();
+        unclassifiedFolderGlyphPalettes.Clear();
+        hoveredUnclassifiedFolderKey = null;
         visibleUnclassifiedPhotos.Clear();
         unclassifiedSelectionAction = null;
         unclassifiedSelectionActionSummary = null;
         unclassifiedSelectionActionDetails = null;
+        unclassifiedSelectionActionDetailsContainer = null;
+        unclassifiedRule1InsertionRow = null;
+        unclassifiedRule1InsertionComboBox = null;
         unclassifiedSelectionActionToggleIcon = null;
         unclassifiedSelectionActionButton = null;
         unclassifiedTreeScrollViewer = null;
@@ -1353,16 +1440,59 @@ public sealed partial class MainWindow : Window
         };
         unclassifiedSelectionActionDetails = new TextBlock
         {
-            Margin = new Thickness(0, 6, 0, 0),
             Foreground = Brush("#52606b"),
             FontSize = 13,
-            TextWrapping = TextWrapping.Wrap,
-            IsVisible = false
+            TextWrapping = TextWrapping.Wrap
+        };
+        unclassifiedRule1InsertionComboBox = CompactComboBox(96);
+        unclassifiedRule1InsertionComboBox.SelectionChanged += (_, _) =>
+        {
+            if (!isRefreshingRule1InsertionOptions &&
+                unclassifiedRule1InsertionComboBox.SelectedItem is Rule1InsertionOption option)
+            {
+                rule1GroupInsertionIndex = option.InsertionIndex;
+            }
+        };
+        unclassifiedRule1InsertionRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 4,
+            VerticalAlignment = VerticalAlignment.Center,
+            IsVisible = false,
+            Children =
+            {
+                new TextBlock
+                {
+                    Text = "• 공종번호",
+                    Foreground = Brush("#52606b"),
+                    FontSize = 13,
+                    VerticalAlignment = VerticalAlignment.Center
+                },
+                unclassifiedRule1InsertionComboBox,
+                new TextBlock
+                {
+                    Text = "위치에 페이지 추가",
+                    Foreground = Brush("#52606b"),
+                    FontSize = 13,
+                    VerticalAlignment = VerticalAlignment.Center
+                }
+            }
+        };
+        unclassifiedSelectionActionDetailsContainer = new StackPanel
+        {
+            Margin = new Thickness(0, 6, 0, 0),
+            Spacing = 4,
+            IsVisible = false,
+            Children =
+            {
+                unclassifiedSelectionActionDetails,
+                unclassifiedRule1InsertionRow
+            }
         };
         unclassifiedSelectionActionToggleIcon = new TextBlock
         {
             Text = "▸",
-            Margin = new Thickness(8, 0, 0, 0),
+            Margin = new Thickness(0, 0, 8, 0),
             FontSize = 14,
             FontWeight = FontWeight.Bold,
             Foreground = Brush("#2f80ed"),
@@ -1371,10 +1501,10 @@ public sealed partial class MainWindow : Window
 
         var toggleContent = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("*,Auto")
+            ColumnDefinitions = new ColumnDefinitions("Auto,*")
         };
-        AddToGrid(toggleContent, unclassifiedSelectionActionSummary, 0, 0);
-        AddToGrid(toggleContent, unclassifiedSelectionActionToggleIcon, 1, 0);
+        AddToGrid(toggleContent, unclassifiedSelectionActionToggleIcon, 0, 0);
+        AddToGrid(toggleContent, unclassifiedSelectionActionSummary, 1, 0);
         var toggle = new Button
         {
             Content = toggleContent,
@@ -1400,16 +1530,15 @@ public sealed partial class MainWindow : Window
         var button = new Button
         {
             Content = "선택된 사진으로 공종 추가하기",
-            MinWidth = 260,
-            Height = 46,
+            Height = 26,
             Margin = new Thickness(20, 0, 0, 0),
-            Padding = new Thickness(18, 0),
+            Padding = new Thickness(12, 0),
             Background = Brush("#2f80ed"),
             Foreground = Brushes.White,
             BorderThickness = new Thickness(0),
-            CornerRadius = new CornerRadius(8),
-            FontSize = 16,
-            FontWeight = FontWeight.Bold,
+            CornerRadius = new CornerRadius(4),
+            FontSize = 14,
+            FontWeight = FontWeight.Normal,
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center
         };
@@ -1428,9 +1557,9 @@ public sealed partial class MainWindow : Window
             RowDefinitions = new RowDefinitions("Auto,Auto")
         };
         AddToGrid(content, toggle, 0, 0);
-        AddToGrid(content, unclassifiedSelectionActionDetails, 0, 1);
+        AddToGrid(content, unclassifiedSelectionActionDetailsContainer, 0, 1);
         AddToGrid(content, button, 1, 0);
-        Grid.SetRowSpan(button, 2);
+        Grid.SetColumnSpan(unclassifiedSelectionActionDetailsContainer, 2);
 
         var action = new Border
         {
@@ -1441,6 +1570,7 @@ public sealed partial class MainWindow : Window
             BorderThickness = new Thickness(0, 1, 0, 0),
             Child = content
         };
+        action.Classes.Add(UnclassifiedSelectionActionClass);
         UpdateUnclassifiedSelectionAction(action, unclassifiedSelectionActionSummary);
         return action;
     }
@@ -1623,7 +1753,7 @@ public sealed partial class MainWindow : Window
             TextAlignment = TextAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
         }, 0, 0);
-        AddToGrid(content, FolderGlyph(), 1, 0);
+        AddToGrid(content, Rule1FolderGlyph(node.Key), 1, 0);
         AddToGrid(content, new TextBlock
         {
             Text = node.Name,
@@ -1643,8 +1773,10 @@ public sealed partial class MainWindow : Window
                 return;
             }
 
-            ClearUnclassifiedPhotoSelection();
-            UpdateUnclassifiedPhotoSelectionVisuals();
+            if (FolderPhotoSelection.ShouldClearOnFolderToggle(isRule1Selection))
+            {
+                ClearUnclassifiedPhotoSelection();
+            }
             ToggleUnclassifiedFolder(node.Key);
             args.Handled = true;
         };
@@ -2259,35 +2391,15 @@ public sealed partial class MainWindow : Window
         cntPerPage.Children.Add(new TextBlock
         {
             Text = "한 페이지당 사진 수",
+            FontSize = PhotoMetadataFontSize,
             Foreground = Brush("#1f252a"),
             VerticalAlignment = VerticalAlignment.Center
         });
-        var cntCombo = new ComboBox
-        {
-            ItemsSource = Enumerable.Range(
-                PhotoGroup.MinCntPerPage,
-                PhotoGroup.MaxCntPerPage - PhotoGroup.MinCntPerPage + 1),
-            SelectedItem = PhotoGroup.NormalizeCntPerPage(group.CntPerPage),
-            Width = 58,
-            Height = 26,
-            Padding = new Thickness(6, 0),
-            FontSize = 13,
-            Foreground = Brush("#1f252a"),
-            Background = Brushes.White,
-            BorderBrush = Brushes.Transparent,
-            BorderThickness = new Thickness(0),
-            VerticalAlignment = VerticalAlignment.Center
-        };
-        cntCombo.Resources["ComboBoxForeground"] = Brush("#1f252a");
-        cntCombo.Resources["ComboBoxForegroundPointerOver"] = Brush("#1f252a");
-        cntCombo.Resources["ComboBoxForegroundPressed"] = Brush("#1f252a");
-        cntCombo.Resources["ComboBoxBackground"] = Brushes.White;
-        cntCombo.Resources["ComboBoxBackgroundPointerOver"] = Brush("#f1f3f5");
-        cntCombo.Resources["ComboBoxBackgroundPressed"] = Brush("#e9ecef");
-        cntCombo.Resources["ComboBoxBorderBrush"] = Brushes.Transparent;
-        cntCombo.Resources["ComboBoxBorderBrushPointerOver"] = Brushes.Transparent;
-        cntCombo.Resources["ComboBoxBorderBrushFocused"] = Brushes.Transparent;
-        cntCombo.Resources["ComboBoxBorderBrushPressed"] = Brushes.Transparent;
+        var cntCombo = CompactComboBox(64);
+        cntCombo.ItemsSource = Enumerable.Range(
+            PhotoGroup.MinCntPerPage,
+            PhotoGroup.MaxCntPerPage - PhotoGroup.MinCntPerPage + 1);
+        cntCombo.SelectedItem = PhotoGroup.NormalizeCntPerPage(group.CntPerPage);
         cntCombo.SelectionChanged += (_, _) =>
         {
             if (cntCombo.SelectedItem is int count && group.CntPerPage != count)
@@ -2350,7 +2462,7 @@ public sealed partial class MainWindow : Window
             Watermark = group.IsBlankPage ? "빈 페이지로 출력됩니다." : "공종 이름을 입력해주세요",
             Height = 28,
             Padding = new Thickness(0),
-            FontSize = 13,
+            FontSize = PhotoMetadataFontSize,
             LineHeight = 18,
             Foreground = Brush("#1f252a"),
             Background = Brushes.Transparent,
@@ -2452,15 +2564,21 @@ public sealed partial class MainWindow : Window
             args.Handled = true;
         };
 
+        var hoverHint = new PopupHoverHint();
+        hoverHint.Surface.Margin = new Thickness(141, 32, 0, 0);
+        hoverHint.Surface.MaxWidth = 180;
+        hoverHint.Surface.HorizontalAlignment = HorizontalAlignment.Left;
+        hoverHint.Surface.VerticalAlignment = VerticalAlignment.Top;
+
         var buttons = new StackPanel
         {
             Orientation = Orientation.Vertical,
             Spacing = 2
         };
-        buttons.Children.Add(GroupInsertControlButton("↑ 빈 페이지", "바로 위에 빈 페이지 추가", () => InsertPageBesideGroup(group.Id, after: false, blankPage: true)));
-        buttons.Children.Add(GroupInsertControlButton("↓ 빈 페이지", "바로 아래 빈 페이지 추가", () => InsertPageBesideGroup(group.Id, after: true, blankPage: true)));
-        buttons.Children.Add(GroupInsertControlButton("↑ 공종 페이지", "바로 위에 공종 페이지 추가", () => InsertPageBesideGroup(group.Id, after: false, blankPage: false)));
-        buttons.Children.Add(GroupInsertControlButton("↓ 공종 페이지", "바로 아래 공종 페이지 추가", () => InsertPageBesideGroup(group.Id, after: true, blankPage: false)));
+        buttons.Children.Add(GroupInsertControlButton("↑ 빈 페이지", "바로 위에 빈 페이지 추가", hoverHint, () => InsertPageBesideGroup(group.Id, after: false, blankPage: true)));
+        buttons.Children.Add(GroupInsertControlButton("↓ 빈 페이지", "바로 아래 빈 페이지 추가", hoverHint, () => InsertPageBesideGroup(group.Id, after: true, blankPage: true)));
+        buttons.Children.Add(GroupInsertControlButton("↑ 공종 페이지", "바로 위에 공종 페이지 추가", hoverHint, () => InsertPageBesideGroup(group.Id, after: false, blankPage: false)));
+        buttons.Children.Add(GroupInsertControlButton("↓ 공종 페이지", "바로 아래 공종 페이지 추가", hoverHint, () => InsertPageBesideGroup(group.Id, after: true, blankPage: false)));
 
         var overlay = new Border
         {
@@ -2485,7 +2603,8 @@ public sealed partial class MainWindow : Window
             Children =
             {
                 numberBorder,
-                overlay
+                overlay,
+                hoverHint.Surface
             }
         };
         var suppressUntilPointerExit = false;
@@ -2493,9 +2612,21 @@ public sealed partial class MainWindow : Window
         {
             overlay.IsVisible = show;
             numberBorder.BorderBrush = show ? Brush("#2f80ed") : Brushes.Transparent;
-            host.Width = show ? 146 : 36;
+            host.Width = show ? (hoverHint.Surface.IsVisible ? 321 : 146) : 36;
             host.Height = show ? 150 : 54;
+            if (!show)
+            {
+                hoverHint.Hide();
+            }
         }
+
+        hoverHint.VisibilityChanged = _ =>
+        {
+            if (overlay.IsVisible)
+            {
+                ApplyHoverState(show: true);
+            }
+        };
 
         hideForDrag = () =>
         {
@@ -2519,9 +2650,9 @@ public sealed partial class MainWindow : Window
         return host;
     }
 
-    private Button GroupInsertControlButton(string text, string tooltip, Action action)
+    private Button GroupInsertControlButton(string text, string tooltip, PopupHoverHint hoverHint, Action action)
     {
-        var button = CellControlButton(text, tooltip);
+        var button = CellControlButton(text, tooltip, hoverHint);
         button.Width = 108;
         button.FontSize = 12;
         button.Click += (_, _) => action();
@@ -2567,7 +2698,7 @@ public sealed partial class MainWindow : Window
         }
         RefreshPanelHeaders();
         RefreshDetail();
-        ScheduleRevealCreatedClassifiedGroups([insertedPage.Id], alignNearUpperCenter: false);
+        ScheduleHighlightCreatedClassifiedGroups([insertedPage.Id]);
         QueueAutoSave($"{pageKind}를 바로 {direction}에 추가했습니다");
     }
 
@@ -3620,6 +3751,43 @@ public sealed partial class MainWindow : Window
             }
         };
         return outline;
+    }
+
+    private static ComboBox CompactComboBox(double width)
+    {
+        var black = Brush("#111111");
+        var comboBox = new ComboBox
+        {
+            Width = width,
+            Height = 28,
+            Padding = new Thickness(8, 0, 0, 0),
+            FontSize = 13,
+            Foreground = black,
+            Background = Brushes.White,
+            BorderBrush = black,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+            VerticalContentAlignment = VerticalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        comboBox.Resources["ComboBoxForeground"] = black;
+        comboBox.Resources["ComboBoxForegroundFocused"] = black;
+        comboBox.Resources["ComboBoxForegroundFocusedPressed"] = black;
+        comboBox.Resources["ComboBoxBackground"] = Brushes.White;
+        comboBox.Resources["ComboBoxBackgroundPointerOver"] = Brush("#f1f3f5");
+        comboBox.Resources["ComboBoxBackgroundPressed"] = Brush("#e9ecef");
+        comboBox.Resources["ComboBoxBackgroundUnfocused"] = Brushes.Transparent;
+        comboBox.Resources["ComboBoxBorderBrush"] = black;
+        comboBox.Resources["ComboBoxBorderBrushPointerOver"] = black;
+        comboBox.Resources["ComboBoxBorderBrushPressed"] = black;
+        comboBox.Resources["ComboBoxBackgroundBorderBrushFocused"] = black;
+        comboBox.Resources["ComboBoxDropDownGlyphForeground"] = black;
+        comboBox.Resources["ComboBoxDropDownGlyphForegroundFocused"] = black;
+        comboBox.Resources["ComboBoxDropDownGlyphForegroundFocusedPressed"] = black;
+        comboBox.Resources["ComboBoxDropDownBorderBrush"] = black;
+        comboBox.Resources["ComboBoxDropdownBorderThickness"] = new Thickness(1);
+        return comboBox;
     }
 
     private static IBrush Brush(string color)

@@ -1,6 +1,7 @@
 using Avalonia;
 using Avalonia.Animation;
 using Avalonia.Controls;
+using Avalonia.Controls.Documents;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -20,6 +21,8 @@ namespace SiteSnap.Presentation;
 public sealed partial class MainWindow
 {
     private const string UnclassifiedPhotoCardClass = "unclassified-photo-card";
+    private const string UnclassifiedSelectionActionClass = "unclassified-selection-action";
+    private const double EmptyCellRightInsertionThresholdRatio = 0.8;
     private static readonly Regex Rule1PhotoNamePattern = new(
         "^(?<number>[0-9]+)(?<phase>전|중|후)$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
@@ -102,7 +105,8 @@ public sealed partial class MainWindow
                 cellIndex,
                 width,
                 collectionWidth,
-                insertionIndicator);
+                insertionIndicator,
+                emptyCard);
             return emptySlot;
         }
 
@@ -124,7 +128,7 @@ public sealed partial class MainWindow
 
         var name = PermanentFileNameTextBox(
             relativePath,
-            11,
+            PhotoMetadataFontSize,
             Brush("#1f252a"),
             nameWidth,
             onBeginEdit: () =>
@@ -214,7 +218,8 @@ public sealed partial class MainWindow
             cellIndex,
             width,
             collectionWidth,
-            insertionIndicator);
+            insertionIndicator,
+            emptyCellDropHighlight: null);
         return card;
     }
 
@@ -245,6 +250,24 @@ public sealed partial class MainWindow
         indicator.IsVisible = true;
     }
 
+    private static void SetEmptyCellDropHighlight(Border? card, bool highlighted)
+    {
+        if (card is null)
+        {
+            return;
+        }
+
+        card.Background = highlighted ? Brush("#eaf4ff") : Brushes.White;
+        card.BorderBrush = highlighted || card.IsPointerOver
+            ? Brush("#2f80ed")
+            : Brush("#d8dde2");
+    }
+
+    private static bool IsEmptyCellRightInsertionZone(Control control, DragEventArgs e)
+    {
+        return e.GetPosition(control).X >= control.Bounds.Width * EmptyCellRightInsertionThresholdRatio;
+    }
+
     private void ShowPhotoPathInStatus(string relativePath)
     {
         if (string.IsNullOrWhiteSpace(state.RootDir) || string.IsNullOrWhiteSpace(relativePath))
@@ -263,7 +286,13 @@ public sealed partial class MainWindow
         double cardWidth,
         double cardHeight)
     {
-        var remove = CellControlButton("−", "분류 해제 / 셀 삭제");
+        var hoverHint = new PopupHoverHint();
+        hoverHint.Surface.Margin = new Thickness(4, Math.Max(18, ScaledPhotoSize(25, classifiedPhotoScaleLevel)) + 10, 4, 0);
+        hoverHint.Surface.MaxWidth = Math.Max(80, cardWidth - 8);
+        hoverHint.Surface.HorizontalAlignment = HorizontalAlignment.Center;
+        hoverHint.Surface.VerticalAlignment = VerticalAlignment.Top;
+
+        var remove = CellControlButton("−", "분류 해제 / 셀 삭제", hoverHint);
         var buttons = new StackPanel
         {
             Orientation = Orientation.Horizontal,
@@ -275,8 +304,8 @@ public sealed partial class MainWindow
         };
         if (!omit)
         {
-            var insertLeft = CellControlButton("←", "왼쪽에 빈 셀 추가");
-            var insertRight = CellControlButton("→", "오른쪽에 빈 셀 추가");
+            var insertLeft = CellControlButton("←", "왼쪽에 빈 셀 추가", hoverHint);
+            var insertRight = CellControlButton("→", "오른쪽에 빈 셀 추가", hoverHint);
             insertLeft.Click += (_, _) => InsertClassifiedTargetCell(group, cellIndex);
             insertRight.Click += (_, _) => InsertClassifiedTargetCell(group, cellIndex + 1);
             buttons.Children.Add(insertLeft);
@@ -304,7 +333,8 @@ public sealed partial class MainWindow
             Children =
             {
                 cardSurface,
-                overlay
+                overlay,
+                hoverHint.Surface
             }
         };
         root.PropertyChanged += (_, args) =>
@@ -313,13 +343,17 @@ public sealed partial class MainWindow
             {
                 overlay.IsVisible = root.IsPointerOver;
                 cardSurface.BorderBrush = root.IsPointerOver ? Brush("#2f80ed") : Brush("#d8dde2");
+                if (!root.IsPointerOver)
+                {
+                    hoverHint.Hide();
+                }
             }
         };
         remove.Click += (_, _) => RemoveClassifiedCell(group, omit, cellIndex);
         return root;
     }
 
-    private Button CellControlButton(string text, string tooltip)
+    private Button CellControlButton(string text, string tooltip, PopupHoverHint? hoverHint = null)
     {
         var size = Math.Max(18, ScaledPhotoSize(25, classifiedPhotoScaleLevel));
         var button = new Button
@@ -340,17 +374,103 @@ public sealed partial class MainWindow
             Focusable = false
         };
         button.Resources["ButtonBackground"] = Brush("#f8f9fa");
-        button.Resources["ButtonBackgroundPointerOver"] = Brush("#f7f8f9");
-        button.Resources["ButtonBackgroundPressed"] = Brush("#dfe4e8");
+        button.Resources["ButtonBackgroundPointerOver"] = Brush("#eaf4ff");
+        button.Resources["ButtonBackgroundPressed"] = Brush("#d8ecff");
         button.Resources["ButtonForeground"] = Brush("#1f252a");
         button.Resources["ButtonForegroundPointerOver"] = Brush("#1f252a");
         button.Resources["ButtonForegroundPressed"] = Brush("#1f252a");
         button.Resources["ButtonBorderBrush"] = Brush("#d8dde2");
-        button.Resources["ButtonBorderBrushPointerOver"] = Brush("#d8dde2");
-        button.Resources["ButtonBorderBrushPressed"] = Brush("#d8dde2");
-        ToolTip.SetTip(button, tooltip);
+        button.Resources["ButtonBorderBrushPointerOver"] = Brush("#2f80ed");
+        button.Resources["ButtonBorderBrushPressed"] = Brush("#2f80ed");
+        if (hoverHint is null)
+        {
+            ToolTip.SetTip(button, tooltip);
+        }
+        else
+        {
+            hoverHint.Bind(button, tooltip);
+        }
         button.PointerPressed += (_, args) => args.Handled = true;
         return button;
+    }
+
+    private sealed class PopupHoverHint
+    {
+        private readonly TextBlock text;
+        private int pointerVersion;
+        private bool isButtonPointerOver;
+
+        public PopupHoverHint()
+        {
+            text = new TextBlock
+            {
+                FontSize = 12,
+                Foreground = Brush("#1f252a"),
+                TextWrapping = TextWrapping.Wrap
+            };
+            Surface = new Border
+            {
+                IsVisible = false,
+                Padding = new Thickness(7, 4),
+                Background = Brush("#ffffff"),
+                BorderBrush = Brush("#aeb8c2"),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(4),
+                Child = text
+            };
+            Surface.PointerEntered += (_, _) => pointerVersion++;
+            Surface.PointerExited += (_, _) => ScheduleHide();
+        }
+
+        public Border Surface { get; }
+
+        public Action<bool>? VisibilityChanged { get; set; }
+
+        public void Bind(Button button, string message)
+        {
+            button.PointerEntered += (_, _) =>
+            {
+                pointerVersion++;
+                isButtonPointerOver = true;
+                text.Text = message;
+                SetVisible(true);
+            };
+            button.PointerExited += (_, _) =>
+            {
+                isButtonPointerOver = false;
+                ScheduleHide();
+            };
+        }
+
+        public void Hide()
+        {
+            pointerVersion++;
+            isButtonPointerOver = false;
+            SetVisible(false);
+        }
+
+        private void ScheduleHide()
+        {
+            var version = ++pointerVersion;
+            DispatcherTimer.RunOnce(() =>
+            {
+                if (version == pointerVersion && !isButtonPointerOver && !Surface.IsPointerOver)
+                {
+                    SetVisible(false);
+                }
+            }, TimeSpan.FromMilliseconds(80), DispatcherPriority.Input);
+        }
+
+        private void SetVisible(bool visible)
+        {
+            if (Surface.IsVisible == visible)
+            {
+                return;
+            }
+
+            Surface.IsVisible = visible;
+            VisibilityChanged?.Invoke(visible);
+        }
     }
 
     private void RemoveClassifiedCell(PhotoGroup group, bool omit, int cellIndex)
@@ -555,7 +675,7 @@ public sealed partial class MainWindow
 
         var name = PermanentFileNameTextBox(
             relativePath,
-            11,
+            PhotoMetadataFontSize,
             assigned ? Brush("#b7b9ba") : Brush("#1f252a"),
             nameWidth,
             isReadOnly: assigned,
@@ -877,9 +997,7 @@ public sealed partial class MainWindow
 
         if (isRule1Selection)
         {
-            selectedPhotos.Clear();
-            unclassifiedSelectionAnchor = string.Empty;
-            isRule1Selection = false;
+            ClearUnclassifiedPhotoSelection();
         }
 
         var selectRange = IsShiftPressed(modifiers);
@@ -974,7 +1092,9 @@ public sealed partial class MainWindow
         while (visual is not null)
         {
             if (visual is Control control &&
-                (control.Classes.Contains(UnclassifiedPhotoCardClass) || control is Button or ScrollBar))
+                (control.Classes.Contains(UnclassifiedPhotoCardClass) ||
+                    control.Classes.Contains(UnclassifiedSelectionActionClass) ||
+                    control is Button or ScrollBar or ComboBox))
             {
                 return true;
             }
@@ -1039,6 +1159,7 @@ public sealed partial class MainWindow
             if (selectedPhotos.Count == 0)
             {
                 isRule1Selection = false;
+                rule1GroupInsertionIndex = null;
             }
 
             unclassifiedSelectionAnchor = string.Empty;
@@ -1058,6 +1179,7 @@ public sealed partial class MainWindow
         selectedPhotos.Clear();
         unclassifiedSelectionAnchor = string.Empty;
         isRule1Selection = false;
+        rule1GroupInsertionIndex = null;
     }
 
     private void UpdateUnclassifiedPhotoSelectionVisuals()
@@ -1080,6 +1202,7 @@ public sealed partial class MainWindow
         }
 
         UpdateUnclassifiedFolderStatusCounts();
+        RefreshUnclassifiedFolderGlyphColors();
 
         if (unclassifiedSelectionAction is not null && unclassifiedSelectionActionSummary is not null)
         {
@@ -1099,25 +1222,37 @@ public sealed partial class MainWindow
         {
             selectedCounts.TryGetValue(folderKey, out var selectedCount);
             classifiedCounts.TryGetValue(folderKey, out var classifiedCount);
-            label.Text = FormatUnclassifiedFolderStatus(selectedCount, classifiedCount);
-            label.IsVisible = label.Text.Length > 0;
+            UpdateUnclassifiedFolderStatus(label, selectedCount, classifiedCount);
         }
     }
 
-    private static string FormatUnclassifiedFolderStatus(int selectedCount, int classifiedCount)
+    private static void UpdateUnclassifiedFolderStatus(
+        TextBlock label,
+        int selectedCount,
+        int classifiedCount)
     {
-        var parts = new List<string>(2);
+        label.Inlines!.Clear();
         if (selectedCount > 0)
         {
-            parts.Add($"{selectedCount}개 선택됨");
+            label.Inlines.Add(new Run
+            {
+                Text = $"{selectedCount}개 선택됨",
+                Foreground = Brush("#2f80ed")
+            });
         }
 
         if (classifiedCount > 0)
         {
-            parts.Add($"{classifiedCount}개 분류됨");
+            label.Inlines.Add(new Run
+            {
+                Text = selectedCount > 0
+                    ? $" · {classifiedCount}개 분류됨"
+                    : $"{classifiedCount}개 분류됨",
+                Foreground = Brush("#7d8790")
+            });
         }
 
-        return string.Join(" · ", parts);
+        label.IsVisible = selectedCount > 0 || classifiedCount > 0;
     }
 
     private static Dictionary<string, int> PhotoCountsByFolder(IEnumerable<string> relativePaths)
@@ -1160,6 +1295,10 @@ public sealed partial class MainWindow
             {
                 unclassifiedSelectionActionDetails.Text = string.Empty;
             }
+            if (unclassifiedRule1InsertionRow is not null)
+            {
+                unclassifiedRule1InsertionRow.IsVisible = false;
+            }
             UpdateUnclassifiedSelectionActionExpansion();
             return;
         }
@@ -1175,6 +1314,11 @@ public sealed partial class MainWindow
                     $"• 공종 페이지 {groupCount}개 추가\n" +
                     "• 공종 제목: \"{폴더 이름} {숫자}구역\"";
             }
+            if (unclassifiedRule1InsertionRow is not null)
+            {
+                unclassifiedRule1InsertionRow.IsVisible = true;
+                RefreshRule1InsertionOptions();
+            }
             ApplyUnclassifiedSelectionActionPalette(action, "#eaf4ff", "#b9d8ff", "#2f80ed", "#246fd1", "#1d5db3");
             UpdateUnclassifiedSelectionActionExpansion();
             return;
@@ -1188,18 +1332,51 @@ public sealed partial class MainWindow
                 ? "선택 순서대로 전/중/후/나머지 영역에 자동 배치됩니다."
                 : $"선택 순서대로 전/중/후/나머지 영역에 자동 배치됩니다.\n공종 제목은 첫 번째 선택 사진의 폴더 이름인 \"{suggestedTitle}\"로 자동 입력됩니다.";
         }
+        if (unclassifiedRule1InsertionRow is not null)
+        {
+            unclassifiedRule1InsertionRow.IsVisible = false;
+        }
         ApplyUnclassifiedSelectionActionPalette(action, "#eaf4ff", "#b9d8ff", "#2f80ed", "#246fd1", "#1d5db3");
         UpdateUnclassifiedSelectionActionExpansion();
     }
 
-    private void UpdateUnclassifiedSelectionActionExpansion()
+    private void RefreshRule1InsertionOptions()
     {
-        if (unclassifiedSelectionActionDetails is null || unclassifiedSelectionActionToggleIcon is null)
+        if (unclassifiedRule1InsertionComboBox is not { } comboBox)
         {
             return;
         }
 
-        unclassifiedSelectionActionDetails.IsVisible = isUnclassifiedSelectionActionExpanded;
+        var selectedInsertionIndex = rule1GroupInsertionIndex is >= 0 &&
+            rule1GroupInsertionIndex < state.Groups.Count
+                ? rule1GroupInsertionIndex
+                : null;
+        var options = Enumerable.Range(0, state.Groups.Count)
+            .Select(index => new Rule1InsertionOption((index + 1).ToString(), index))
+            .Append(new Rule1InsertionOption("마지막", null))
+            .ToList();
+
+        isRefreshingRule1InsertionOptions = true;
+        try
+        {
+            comboBox.ItemsSource = options;
+            comboBox.SelectedItem = options.First(option => option.InsertionIndex == selectedInsertionIndex);
+            rule1GroupInsertionIndex = selectedInsertionIndex;
+        }
+        finally
+        {
+            isRefreshingRule1InsertionOptions = false;
+        }
+    }
+
+    private void UpdateUnclassifiedSelectionActionExpansion()
+    {
+        if (unclassifiedSelectionActionDetailsContainer is null || unclassifiedSelectionActionToggleIcon is null)
+        {
+            return;
+        }
+
+        unclassifiedSelectionActionDetailsContainer.IsVisible = isUnclassifiedSelectionActionExpanded;
         unclassifiedSelectionActionToggleIcon.Text = isUnclassifiedSelectionActionExpanded ? "▾" : "▸";
     }
 
@@ -1224,27 +1401,57 @@ public sealed partial class MainWindow
         unclassifiedSelectionActionButton.Resources["ButtonBackgroundPressed"] = Brush(buttonPressed);
     }
 
-    private void SelectPhotosByRule1()
+    private void TogglePhotosByRule1Folder(string folderKey)
     {
         var assigned = state.AssignedSet();
+        var scopedFolderPath = string.Equals(folderKey, UnclassifiedRootKey, StringComparison.Ordinal)
+            ? string.Empty
+            : folderKey;
         var scannedPaths = scanResult.Photos
             .Select(photo => photo.RelativePath)
             .ToList();
-        var totalMatchCount = BuildRule1GroupPlans(scannedPaths, OpenedRootName())
+        var scopedScannedPaths = scannedPaths
+            .Where(path => WorkspacePath.IsInFolder(path, scopedFolderPath))
+            .ToList();
+        var totalMatchCount = BuildRule1GroupPlans(scopedScannedPaths, OpenedRootName())
             .Sum(plan => plan.Photos.Count);
         var candidates = scannedPaths
             .Where(path => !assigned.Contains(AppState.NormalizePath(path)))
             .ToList();
-        var plans = BuildRule1GroupPlans(candidates, OpenedRootName());
+        var eligiblePhotos = BuildRule1GroupPlans(candidates, OpenedRootName())
+            .SelectMany(plan => plan.Photos
+                .OrderBy(photo => photo.PhaseIndex)
+                .ThenBy(photo => photo.RelativePath, StringComparer.OrdinalIgnoreCase)
+                .Select(photo => photo.RelativePath))
+            .ToList();
+
+        if (!isRule1Selection)
+        {
+            selectedPhotos.Clear();
+            rule1GroupInsertionIndex = null;
+        }
+
+        var hadSelectionInScope = FolderPhotoSelection.HasSelectionInFolder(selectedPhotos, scopedFolderPath);
+        var toggledSelection = FolderPhotoSelection.Toggle(selectedPhotos, eligiblePhotos, scopedFolderPath);
 
         selectedPhotos.Clear();
-        selectedPhotos.AddRange(plans.SelectMany(plan => plan.Photos
-            .OrderBy(photo => photo.PhaseIndex)
-            .ThenBy(photo => photo.RelativePath, StringComparer.OrdinalIgnoreCase)
-            .Select(photo => photo.RelativePath)));
+        selectedPhotos.AddRange(toggledSelection);
         unclassifiedSelectionAnchor = string.Empty;
         isRule1Selection = selectedPhotos.Count > 0;
-        status.Text = Rule1SelectionStatus(selectedPhotos.Count, plans.Count, totalMatchCount);
+        if (selectedPhotos.Count == 0 && hadSelectionInScope)
+        {
+            status.Text = "규칙1 선택을 해제했습니다.";
+        }
+        else if (!hadSelectionInScope && !eligiblePhotos.Any(path => WorkspacePath.IsInFolder(path, scopedFolderPath)))
+        {
+            status.Text = Rule1SelectionStatus(0, 0, totalMatchCount);
+        }
+        else
+        {
+            var selectedPlans = BuildRule1GroupPlans(selectedPhotos, OpenedRootName());
+            status.Text = Rule1SelectionStatus(selectedPhotos.Count, selectedPlans.Count, selectedPhotos.Count);
+        }
+
         UpdateUnclassifiedPhotoSelectionVisuals();
     }
 
@@ -1271,13 +1478,24 @@ public sealed partial class MainWindow
             return;
         }
 
+        var firstInsertionIndex = Math.Clamp(
+            rule1GroupInsertionIndex ?? state.Groups.Count,
+            0,
+            state.Groups.Count);
+        var appendsAtEnd = firstInsertionIndex == state.Groups.Count;
+        var rangeSnapshot = appendsAtEnd
+            ? null
+            : CaptureClassifiedGroupRangeRefreshSnapshot(
+                firstInsertionIndex,
+                state.Groups.Count - 1);
+        var nextInsertionIndex = firstInsertionIndex;
         var createdGroupIds = new List<string>();
         var createdGroups = new List<PhotoGroup>();
         var assignedPaths = new List<string>();
         var assignedPhotoCount = 0;
         foreach (var plan in plans)
         {
-            var group = state.AddGroup();
+            var group = state.InsertGroup(nextInsertionIndex++);
             group.Title = $"{plan.FolderName} {plan.AreaNumber}구역";
             createdGroupIds.Add(group.Id);
             createdGroups.Add(group);
@@ -1312,7 +1530,15 @@ public sealed partial class MainWindow
         selectedGroupId = createdGroupIds[0];
         var createdGroupCount = plans.Count;
         ClearUnclassifiedPhotoSelection();
-        AppendClassifiedGroups(createdGroups);
+        if (appendsAtEnd)
+        {
+            AppendClassifiedGroups(createdGroups);
+        }
+        else
+        {
+            RefreshClassifiedGroupRange(rangeSnapshot!, state.Groups.Count - 1);
+            UpdateUnclassifiedAssignedGroupNumbers(firstInsertionIndex);
+        }
         RefreshUnclassifiedAssignmentCards(assignedPaths);
         RefreshPanelHeaders();
         RefreshDetail();
@@ -1394,6 +1620,11 @@ public sealed partial class MainWindow
             folderName,
             areaNumber,
             phaseIndex);
+    }
+
+    private sealed record Rule1InsertionOption(string Label, int? InsertionIndex)
+    {
+        public override string ToString() => Label;
     }
 
     private sealed record Rule1PhotoMatch(
@@ -1572,7 +1803,8 @@ public sealed partial class MainWindow
         int cellIndex,
         double slotWidth,
         double collectionWidth,
-        Border insertionIndicator)
+        Border insertionIndicator,
+        Border? emptyCellDropHighlight)
     {
         DragDrop.SetAllowDrop(control, true);
         DragDrop.AddDragOverHandler(control, (_, e) =>
@@ -1580,6 +1812,7 @@ public sealed partial class MainWindow
             var classifiedCell = GetDroppedClassifiedCell(e);
             if (classifiedCell is not null)
             {
+                SetEmptyCellDropHighlight(emptyCellDropHighlight, highlighted: false);
                 var insertAfter = e.GetPosition(control).X >= control.Bounds.Width / 2;
                 var insertionIndex = cellIndex + (insertAfter ? 1 : 0);
                 ShowClassifiedCellInsertionIndicator(
@@ -1591,18 +1824,42 @@ public sealed partial class MainWindow
                 return;
             }
 
-            insertionIndicator.IsVisible = false;
-            if (!CanDropPhoto(e))
+            var relativePaths = GetDroppedPhotos(e);
+            if (relativePaths.Count == 0)
             {
+                insertionIndicator.IsVisible = false;
+                SetEmptyCellDropHighlight(emptyCellDropHighlight, highlighted: false);
                 return;
             }
 
+            var useEmptyCellRightInsertion = emptyCellDropHighlight is not null &&
+                IsEmptyCellRightInsertionZone(control, e);
+            if (emptyCellDropHighlight is not null && !useEmptyCellRightInsertion)
+            {
+                insertionIndicator.IsVisible = false;
+                SetEmptyCellDropHighlight(emptyCellDropHighlight, highlighted: true);
+            }
+            else
+            {
+                SetEmptyCellDropHighlight(emptyCellDropHighlight, highlighted: false);
+                var insertAfter = useEmptyCellRightInsertion ||
+                    e.GetPosition(control).X >= control.Bounds.Width / 2;
+                var insertionIndex = cellIndex + (insertAfter ? 1 : 0);
+                ShowClassifiedCellInsertionIndicator(
+                    insertionIndicator,
+                    insertionIndex * slotWidth,
+                    collectionWidth);
+            }
             e.DragEffects = DragDropEffects.Move;
             e.Handled = true;
         });
         control.AddHandler(
             DragDrop.DragLeaveEvent,
-            (_, _) => insertionIndicator.IsVisible = false,
+            (_, _) =>
+            {
+                insertionIndicator.IsVisible = false;
+                SetEmptyCellDropHighlight(emptyCellDropHighlight, highlighted: false);
+            },
             RoutingStrategies.Bubble);
         DragDrop.AddDropHandler(control, (_, e) =>
         {
@@ -1611,6 +1868,7 @@ public sealed partial class MainWindow
             {
                 var insertAfter = e.GetPosition(control).X >= control.Bounds.Width / 2;
                 insertionIndicator.IsVisible = false;
+                SetEmptyCellDropHighlight(emptyCellDropHighlight, highlighted: false);
                 MoveDroppedClassifiedCell(
                     targetGroup,
                     omit,
@@ -1622,13 +1880,16 @@ public sealed partial class MainWindow
             }
 
             insertionIndicator.IsVisible = false;
+            SetEmptyCellDropHighlight(emptyCellDropHighlight, highlighted: false);
             var relativePaths = GetDroppedPhotos(e);
             if (relativePaths.Count == 0)
             {
                 return;
             }
 
-            if (relativePaths.Count > 1)
+            var useEmptyCellRightInsertion = emptyCellDropHighlight is not null &&
+                IsEmptyCellRightInsertionZone(control, e);
+            if (emptyCellDropHighlight is not null && !useEmptyCellRightInsertion)
             {
                 AssignDroppedPhotosBesideCell(targetGroup, omit, cellIndex, relativePaths);
                 e.DragEffects = DragDropEffects.Move;
@@ -1636,19 +1897,13 @@ public sealed partial class MainWindow
                 return;
             }
 
-            var relativePath = relativePaths[0];
-            var filledExistingCell = false;
-            if (!state.PlacePhotoAt(targetGroup.Id, omit, cellIndex, relativePath, out filledExistingCell))
-            {
-                return;
-            }
-            ClearUnclassifiedPhotoSelection();
-            selectedGroupId = targetGroup.Id;
-            status.Text = filledExistingCell
-                ? $"{targetGroup.Title} > {(omit ? "나머지" : "대상")} 빈 셀에 이동했습니다: {relativePath}"
-                : $"{targetGroup.Title} > {(omit ? "나머지" : "대상")} 셀 오른쪽으로 이동했습니다: {relativePath}";
-            RefreshAfterAssigningPhotos(targetGroup, [relativePath]);
-            QueueAutoSave("사진 위치를 저장했습니다");
+            var insertExternalPhotoAfter = useEmptyCellRightInsertion ||
+                e.GetPosition(control).X >= control.Bounds.Width / 2;
+            AssignDroppedPhotosAtInsertionIndex(
+                targetGroup,
+                omit,
+                cellIndex + (insertExternalPhotoAfter ? 1 : 0),
+                relativePaths);
             e.DragEffects = DragDropEffects.Move;
             e.Handled = true;
         });
@@ -1772,6 +2027,31 @@ public sealed partial class MainWindow
         dragStartPoint = null;
         selectedGroupId = targetGroup.Id;
         status.Text = $"{targetGroup.Title}에 사진 {assignedCount}장을 드롭한 셀 옆으로 이동했습니다.";
+        RefreshAfterAssigningPhotos(targetGroup, relativePaths);
+        QueueAutoSave("사진 위치를 저장했습니다");
+    }
+
+    private void AssignDroppedPhotosAtInsertionIndex(
+        PhotoGroup targetGroup,
+        bool omit,
+        int insertionIndex,
+        IReadOnlyList<string> relativePaths)
+    {
+        var assignedCount = state.PlacePhotosAtInsertionIndex(
+            targetGroup.Id,
+            omit,
+            insertionIndex,
+            relativePaths);
+        if (assignedCount == 0)
+        {
+            return;
+        }
+
+        ClearUnclassifiedPhotoSelection();
+        pendingDragPhoto = string.Empty;
+        dragStartPoint = null;
+        selectedGroupId = targetGroup.Id;
+        status.Text = $"{targetGroup.Title}에 사진 {assignedCount}장을 표시된 위치로 이동했습니다.";
         RefreshAfterAssigningPhotos(targetGroup, relativePaths);
         QueueAutoSave("사진 위치를 저장했습니다");
     }
@@ -2128,7 +2408,7 @@ public sealed partial class MainWindow
             var classifiedCell = GetDroppedClassifiedCell(e);
             if (emptyCollectionInsertionIndicator is not null)
             {
-                if (classifiedCell is not null)
+                if (classifiedCell is not null || CanDropPhoto(e))
                 {
                     ShowClassifiedCellInsertionIndicator(
                         emptyCollectionInsertionIndicator,

@@ -285,6 +285,45 @@ public sealed class AppState
         return normalizedPaths.Count;
     }
 
+    public int PlacePhotosAtInsertionIndex(
+        string groupId,
+        bool omit,
+        int insertionIndex,
+        IReadOnlyList<string> relativePaths)
+    {
+        var group = GroupById(groupId);
+        if (group is null || relativePaths.Count == 0)
+        {
+            return 0;
+        }
+
+        group.NormalizeCells();
+        var cells = omit ? group.Omit : group.Target;
+        if (insertionIndex < 0 || insertionIndex > cells.Count)
+        {
+            return 0;
+        }
+
+        var normalizedPaths = NormalizeUniquePaths(relativePaths);
+        if (normalizedPaths.Count == 0)
+        {
+            return 0;
+        }
+
+        foreach (var relativePath in normalizedPaths)
+        {
+            ClearPhotoFromAllGroups(relativePath);
+        }
+
+        var nextIndex = Math.Clamp(insertionIndex, 0, cells.Count);
+        foreach (var relativePath in normalizedPaths)
+        {
+            cells.Insert(nextIndex++, new PhotoCell { Image = relativePath });
+        }
+
+        return normalizedPaths.Count;
+    }
+
     public int PlacePhotosInCollection(
         string groupId,
         bool omit,
