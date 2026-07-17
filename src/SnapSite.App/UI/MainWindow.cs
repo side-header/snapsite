@@ -1,4 +1,5 @@
 using Avalonia;
+using Avalonia.Animation;
 using Avalonia.Controls;
 using Avalonia.Controls.Documents;
 using Avalonia.Controls.Primitives;
@@ -25,6 +26,7 @@ public sealed partial class MainWindow : Window
     private const string ProgramName = AppInfo.Name;
     private const string ProgramVersion = AppInfo.Version;
     private const string GroupDragPrefix = "new-green-group:";
+    private const string ClassifiedCellDragPrefix = "new-green-classified-cell:";
     private const string MultiPhotoDragPrefix = "new-green-photos:";
     private const string UnclassifiedRootKey = "__newgreen_unclassified_root__";
     private const double SettingsPreviewPaperWidth = 420;
@@ -54,6 +56,7 @@ public sealed partial class MainWindow : Window
     private int unclassifiedPhotoScaleLevel;
     private int classifiedPhotoScaleLevel;
     private int autoSaveFeedbackVersion;
+    private int classifiedPhotoHighlightVersion;
     private readonly HashSet<string> expandedExplorerPaths = [];
     private readonly HashSet<string> expandedUnclassifiedPaths = [];
 
@@ -71,6 +74,10 @@ public sealed partial class MainWindow : Window
     private readonly StackPanel leftPanel = new() { Spacing = 6 };
     private readonly Grid centerPanel = new();
     private readonly StackPanel rightPanel = new() { Spacing = 0 };
+    private readonly Dictionary<string, Control> classifiedGroupViews = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Border> classifiedGroupHighlightViews = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Border> classifiedPhotoCardViews = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<Border, int> classifiedPhotoHighlightVersions = [];
     private readonly Grid detailPanel = new();
     private readonly TextBlock explorerHeader = Header("탐색기 영역");
     private readonly TextBlock unclassifiedHeader = Header("분류되지 않은 영역");
@@ -84,8 +91,11 @@ public sealed partial class MainWindow : Window
     private TextBlock? unclassifiedSelectionActionDetails;
     private TextBlock? unclassifiedSelectionActionToggleIcon;
     private Button? unclassifiedSelectionActionButton;
-    private Popup? activePathTreePopup;
+    private ScrollViewer? unclassifiedTreeScrollViewer;
+    private Control? unclassifiedTreeContent;
+    private ScrollViewer? classifiedScrollViewer;
     private readonly Dictionary<string, (Border Card, Border Badge, TextBlock BadgeText)> unclassifiedPhotoCardViews = new(StringComparer.OrdinalIgnoreCase);
+    private readonly List<(string RelativePath, Control Card)> renderedUnclassifiedPhotoCards = [];
     private readonly Dictionary<string, TextBlock> unclassifiedFolderStatusLabels = new(StringComparer.OrdinalIgnoreCase);
 
     public MainWindow()
@@ -132,7 +142,8 @@ public sealed partial class MainWindow : Window
         AddToGrid(mainGrid, Splitter(GridResizeDirection.Columns), 1, 0);
         AddToGrid(mainGrid, PanelFrame(unclassifiedHeader, centerPanel, HeaderZoomControls(isClassified: false)), 2, 0);
         AddToGrid(mainGrid, Splitter(GridResizeDirection.Columns), 3, 0);
-        AddToGrid(mainGrid, PanelFrame(classifiedHeader, new ScrollViewer { Content = rightPanel }, HeaderZoomControls(isClassified: true)), 4, 0);
+        classifiedScrollViewer = new ScrollViewer { Content = rightPanel };
+        AddToGrid(mainGrid, PanelFrame(classifiedHeader, classifiedScrollViewer, HeaderZoomControls(isClassified: true)), 4, 0);
         previewSplitter = Splitter(GridResizeDirection.Columns);
         previewFrame = PanelFrame("미리보기", detailPanel);
         AddToGrid(mainGrid, previewSplitter, 5, 0);
@@ -480,8 +491,8 @@ public sealed partial class MainWindow : Window
 
         if (isClassified)
         {
-            panel.Children.Add(HeaderActionButton("빈 페이지 추가", AddBlankPage));
-            panel.Children.Add(HeaderActionButton("공종 페이지 추가", AddPhotoGroup));
+            panel.Children.Add(HeaderActionButton("↓ 빈 페이지", AddBlankPage));
+            panel.Children.Add(HeaderActionButton("↓ 공종 페이지", AddPhotoGroup));
         }
         else
         {
@@ -506,6 +517,7 @@ public sealed partial class MainWindow : Window
         var group = state.AddGroup();
         selectedGroupId = group.Id;
         RefreshAll();
+        ScheduleRevealCreatedClassifiedGroups([group.Id], alignNearUpperCenter: false);
     }
 
     private void AddPhotoGroupFromSelection()
@@ -535,12 +547,133 @@ public sealed partial class MainWindow : Window
         ClearUnclassifiedPhotoSelection();
         SaveToMetadata("선택한 사진으로 공종을 추가했습니다", refreshAfterSave: false);
         RefreshAll();
+        ScheduleRevealCreatedClassifiedGroups([group.Id]);
     }
 
     private void AddBlankPage()
     {
-        state.AddBlankPage();
+        var blankPage = state.AddBlankPage();
         RefreshAll();
+        ScheduleRevealCreatedClassifiedGroups([blankPage.Id], alignNearUpperCenter: false);
+    }
+
+    private void ScrollToClassifiedPage(string groupId)
+    {
+        if (!classifiedGroupViews.TryGetValue(groupId, out var targetPage))
+        {
+            return;
+        }
+
+        if (classifiedScrollViewer is not { } scrollViewer || scrollViewer.Viewport.Height <= 0)
+        {
+            targetPage.BringIntoView();
+            return;
+        }
+
+        var targetTop = targetPage.TranslatePoint(new Point(0, 0), rightPanel);
+        if (targetTop is null)
+        {
+            targetPage.BringIntoView();
+            return;
+        }
+
+        var maximumOffset = Math.Max(0, scrollViewer.Extent.Height - scrollViewer.Viewport.Height);
+        var targetOffset = Math.Clamp(targetTop.Value.Y, 0, maximumOffset);
+        scrollViewer.Offset = new Vector(scrollViewer.Offset.X, targetOffset);
+    }
+
+    private void ScheduleRevealCreatedClassifiedGroups(
+        IReadOnlyList<string> groupIds,
+        bool alignNearUpperCenter = true)
+    {
+        var createdGroupIds = groupIds.ToList();
+        DispatcherTimer.RunOnce(
+            () => RevealCreatedClassifiedGroups(createdGroupIds, alignNearUpperCenter),
+            TimeSpan.FromMilliseconds(16),
+            DispatcherPriority.Render);
+    }
+
+    private void RevealCreatedClassifiedGroups(
+        IReadOnlyList<string> groupIds,
+        bool alignNearUpperCenter)
+    {
+        if (groupIds.Count == 0)
+        {
+            return;
+        }
+
+        if (alignNearUpperCenter)
+        {
+            ScrollClassifiedPageNearUpperCenter(groupIds[0]);
+        }
+        else
+        {
+            ScrollToClassifiedPage(groupIds[0]);
+        }
+
+        var highlights = groupIds
+            .Where(classifiedGroupHighlightViews.ContainsKey)
+            .Select(groupId => classifiedGroupHighlightViews[groupId])
+            .ToList();
+        HighlightCreatedClassifiedPages(highlights);
+    }
+
+    private void ScrollClassifiedPageNearUpperCenter(string groupId)
+    {
+        if (!classifiedGroupViews.TryGetValue(groupId, out var targetPage))
+        {
+            return;
+        }
+
+        if (classifiedScrollViewer is not { } scrollViewer || scrollViewer.Viewport.Height <= 0)
+        {
+            targetPage.BringIntoView();
+            return;
+        }
+
+        var targetCenter = targetPage.TranslatePoint(
+            new Point(0, targetPage.Bounds.Height / 2),
+            rightPanel);
+        if (targetCenter is null)
+        {
+            targetPage.BringIntoView();
+            return;
+        }
+
+        var maximumOffset = Math.Max(0, scrollViewer.Extent.Height - scrollViewer.Viewport.Height);
+        var targetOffset = Math.Clamp(
+            targetCenter.Value.Y - scrollViewer.Viewport.Height * 0.4,
+            0,
+            maximumOffset);
+        scrollViewer.Offset = new Vector(scrollViewer.Offset.X, targetOffset);
+    }
+
+    private static void HighlightCreatedClassifiedPages(IReadOnlyList<Border> highlights)
+    {
+        foreach (var highlight in highlights)
+        {
+            highlight.Transitions = null;
+            highlight.Opacity = 1;
+            highlight.Transitions = new Transitions
+            {
+                new DoubleTransition
+                {
+                    Property = Border.OpacityProperty,
+                    Duration = TimeSpan.FromMilliseconds(620)
+                }
+            };
+
+            DispatcherTimer.RunOnce(() =>
+            {
+                highlight.Opacity = 0;
+            }, TimeSpan.FromMilliseconds(60), DispatcherPriority.Render);
+
+            DispatcherTimer.RunOnce(() =>
+            {
+                highlight.Transitions = null;
+                highlight.Opacity = 0;
+            }, TimeSpan.FromMilliseconds(720), DispatcherPriority.Render);
+        }
     }
 
     private void SelectGroupForPreview(string groupId)
@@ -1145,6 +1278,7 @@ public sealed partial class MainWindow : Window
     private void RefreshCenter()
     {
         unclassifiedPhotoCardViews.Clear();
+        renderedUnclassifiedPhotoCards.Clear();
         unclassifiedFolderStatusLabels.Clear();
         visibleUnclassifiedPhotos.Clear();
         unclassifiedSelectionAction = null;
@@ -1152,6 +1286,8 @@ public sealed partial class MainWindow : Window
         unclassifiedSelectionActionDetails = null;
         unclassifiedSelectionActionToggleIcon = null;
         unclassifiedSelectionActionButton = null;
+        unclassifiedTreeScrollViewer = null;
+        unclassifiedTreeContent = null;
         centerPanel.Children.Clear();
         centerPanel.RowDefinitions = new RowDefinitions("*");
         if (string.IsNullOrWhiteSpace(state.RootDir))
@@ -1177,7 +1313,9 @@ public sealed partial class MainWindow : Window
         var unclassifiedTree = BuildUnclassifiedTree();
         ReconcileVisibleUnclassifiedSelection();
         UpdateUnclassifiedPhotoSelectionVisuals();
-        photoSection.Children.Add(new ScrollViewer { Content = unclassifiedTree });
+        unclassifiedTreeContent = unclassifiedTree;
+        unclassifiedTreeScrollViewer = new ScrollViewer { Content = unclassifiedTree };
+        photoSection.Children.Add(unclassifiedTreeScrollViewer);
 
         AddToGrid(centerPanel, photoSection, 0, 0);
     }
@@ -1500,6 +1638,145 @@ public sealed partial class MainWindow : Window
         RefreshCenter();
     }
 
+    private void RevealGroupPhotosInUnclassifiedArea(PhotoGroup group)
+    {
+        RevealPhotosInUnclassifiedArea(group.AllCells().Select(cell => cell.Image));
+    }
+
+    private void RevealPhotosInUnclassifiedArea(IEnumerable<string> relativePaths)
+    {
+        var scannedPhotoPaths = scanResult.Photos
+            .Select(photo => AppState.NormalizePath(photo.RelativePath))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var photoPaths = relativePaths
+            .Select(AppState.NormalizePath)
+            .Where(path => !string.IsNullOrWhiteSpace(path) && scannedPhotoPaths.Contains(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (photoPaths.Count == 0)
+        {
+            return;
+        }
+
+        var expansionChanged = expandedExplorerPaths.Add(UnclassifiedRootKey);
+        expansionChanged |= expandedUnclassifiedPaths.Add(UnclassifiedRootKey);
+        foreach (var photoPath in photoPaths)
+        {
+            var parts = SplitRelativePath(photoPath);
+            var folderKey = string.Empty;
+            for (var i = 0; i < parts.Length - 1; i++)
+            {
+                folderKey = ExplorerKey(folderKey, parts[i]);
+                expansionChanged |= expandedExplorerPaths.Add(folderKey);
+                expansionChanged |= expandedUnclassifiedPaths.Add(folderKey);
+            }
+        }
+
+        var targetPaths = photoPaths.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (!expansionChanged && NavigateToRenderedUnclassifiedPhotos(targetPaths))
+        {
+            return;
+        }
+
+        RefreshLeft();
+        RefreshCenter();
+
+        Dispatcher.UIThread.Post(
+            () => NavigateToRenderedUnclassifiedPhotos(targetPaths),
+            DispatcherPriority.Render);
+    }
+
+    private bool NavigateToRenderedUnclassifiedPhotos(IReadOnlySet<string> targetPaths)
+    {
+        var matchingPhotos = renderedUnclassifiedPhotoCards
+            .Where(candidate => targetPaths.Contains(AppState.NormalizePath(candidate.RelativePath)))
+            .ToList();
+        var renderedTargetCount = matchingPhotos
+            .Select(candidate => AppState.NormalizePath(candidate.RelativePath))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+        if (renderedTargetCount != targetPaths.Count)
+        {
+            return false;
+        }
+
+        var matchingCards = matchingPhotos.Select(candidate => candidate.Card).ToList();
+        ScrollUnclassifiedPhotoIntoPreferredPosition(matchingCards[0]);
+        HighlightAssignedPhotoCards(matchingCards);
+        return true;
+    }
+
+    private void ScrollUnclassifiedPhotoIntoPreferredPosition(Control targetCard)
+    {
+        if (unclassifiedTreeScrollViewer is not { } scrollViewer ||
+            unclassifiedTreeContent is not { } content ||
+            scrollViewer.Viewport.Height <= 0)
+        {
+            targetCard.BringIntoView();
+            return;
+        }
+
+        var targetCenter = targetCard.TranslatePoint(
+            new Point(0, targetCard.Bounds.Height / 2),
+            content);
+        if (targetCenter is null)
+        {
+            targetCard.BringIntoView();
+            return;
+        }
+
+        var maximumOffset = Math.Max(0, scrollViewer.Extent.Height - scrollViewer.Viewport.Height);
+        var targetOffset = Math.Clamp(
+            targetCenter.Value.Y - scrollViewer.Viewport.Height * 0.4,
+            0,
+            maximumOffset);
+        scrollViewer.Offset = new Vector(scrollViewer.Offset.X, targetOffset);
+    }
+
+    private static void HighlightAssignedPhotoCards(IReadOnlyList<Control> cards)
+    {
+        foreach (var control in cards)
+        {
+            if (control is not Border card)
+            {
+                continue;
+            }
+
+            card.Transitions = null;
+            card.Background = Brush("#eaf4ff");
+            card.BorderBrush = Brush("#2f80ed");
+            card.Transitions = new Transitions
+            {
+                new BrushTransition
+                {
+                    Property = Border.BackgroundProperty,
+                    Duration = TimeSpan.FromMilliseconds(620)
+                },
+                new BrushTransition
+                {
+                    Property = Border.BorderBrushProperty,
+                    Duration = TimeSpan.FromMilliseconds(620)
+                }
+            };
+
+            DispatcherTimer.RunOnce(() =>
+            {
+                card.Background = Brush("#f8f9fa");
+                if (!card.IsPointerOver)
+                {
+                    card.BorderBrush = Brush("#c8d1da");
+                }
+            }, TimeSpan.FromMilliseconds(60), DispatcherPriority.Render);
+
+            DispatcherTimer.RunOnce(() =>
+            {
+                card.Transitions = null;
+                card.Background = Brush("#f8f9fa");
+                card.BorderBrush = card.IsPointerOver ? Brush("#2f80ed") : Brush("#c8d1da");
+            }, TimeSpan.FromMilliseconds(720), DispatcherPriority.Render);
+        }
+    }
+
     private void ToggleSharedFolder(string key)
     {
         var shouldExpand = !expandedExplorerPaths.Contains(key) || !expandedUnclassifiedPaths.Contains(key);
@@ -1524,6 +1801,10 @@ public sealed partial class MainWindow : Window
 
     private void RefreshRight()
     {
+        classifiedGroupViews.Clear();
+        classifiedGroupHighlightViews.Clear();
+        classifiedPhotoCardViews.Clear();
+        classifiedPhotoHighlightVersions.Clear();
         rightPanel.Children.Clear();
         rightPanel.Margin = new Thickness(8, 8, 8, 0);
         if (string.IsNullOrWhiteSpace(state.RootDir))
@@ -1540,7 +1821,7 @@ public sealed partial class MainWindow : Window
         {
             rightPanel.Children.Add(new TextBlock
             {
-                Text = "아직 공종이 없습니다. 공종 페이지 추가를 눌러 시작하세요.",
+                Text = "아직 공종이 없습니다. ↓ 공종 페이지를 눌러 시작하세요.",
                 Foreground = Brush("#69737d")
             });
             return;
@@ -1562,7 +1843,6 @@ public sealed partial class MainWindow : Window
             Padding = new Thickness(0),
             Margin = new Thickness(0)
         };
-
         var layout = new Grid
         {
             RowDefinitions = new RowDefinitions("54,Auto")
@@ -1583,9 +1863,9 @@ public sealed partial class MainWindow : Window
         var titleBox = GroupTitleTextBox(group);
         AddToGrid(header, HoverOutline(
             titleBox,
-            HorizontalAlignment.Left,
+            HorizontalAlignment.Stretch,
             VerticalAlignment.Center,
-            new Thickness(0),
+            new Thickness(0, 0, 8, 0),
             new Thickness(4, 1)), 1, 0);
 
         Point? rowSelectStart = null;
@@ -1723,8 +2003,27 @@ public sealed partial class MainWindow : Window
         AddToGrid(layout, photoScroller, 0, 1);
 
         root.Child = layout;
+        var highlight = new Border
+        {
+            Background = Brush("#55eaf4ff"),
+            BorderBrush = Brush("#2f80ed"),
+            BorderThickness = new Thickness(2),
+            IsHitTestVisible = false,
+            Opacity = 0,
+            ZIndex = 100
+        };
+        var container = new Grid
+        {
+            Children =
+            {
+                root,
+                highlight
+            }
+        };
+        classifiedGroupViews[group.Id] = container;
+        classifiedGroupHighlightViews[group.Id] = highlight;
         ConfigureGroupReorder(root, group);
-        return root;
+        return container;
     }
 
     private TextBox GroupTitleTextBox(PhotoGroup group)
@@ -1745,6 +2044,7 @@ public sealed partial class MainWindow : Window
             CaretBrush = Brush("#1f252a"),
             TextAlignment = TextAlignment.Left,
             TextWrapping = TextWrapping.NoWrap,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
             HorizontalContentAlignment = HorizontalAlignment.Left,
             VerticalContentAlignment = VerticalAlignment.Center
         };
@@ -1803,6 +2103,33 @@ public sealed partial class MainWindow : Window
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Top,
             Child = numberText
+        };
+        Point? navigationStart = null;
+        numberBorder.PointerPressed += (_, args) =>
+        {
+            var point = args.GetCurrentPoint(numberBorder);
+            if (!point.Properties.IsLeftButtonPressed)
+            {
+                return;
+            }
+
+            navigationStart = point.Position;
+            args.Handled = true;
+        };
+        numberBorder.PointerReleased += (_, args) =>
+        {
+            if (navigationStart is null)
+            {
+                return;
+            }
+
+            var delta = args.GetPosition(numberBorder) - navigationStart.Value;
+            navigationStart = null;
+            if (Math.Abs(delta.X) < 6 && Math.Abs(delta.Y) < 6)
+            {
+                RevealGroupPhotosInUnclassifiedArea(group);
+            }
+            args.Handled = true;
         };
 
         var buttons = new StackPanel
@@ -1946,14 +2273,31 @@ public sealed partial class MainWindow : Window
             Padding = new Thickness(0, 10, 0, 14)
         };
 
+        var insertionIndicator = ClassifiedCellInsertionIndicator();
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 0 };
         for (var index = 0; index < cells.Count; index++)
         {
-            row.Children.Add(AssignedPhotoCard(group, omit, cells[index], index, slotWidth));
+            row.Children.Add(AssignedPhotoCard(
+                group,
+                omit,
+                cells[index],
+                index,
+                slotWidth,
+                insertionIndicator,
+                contentWidth));
         }
 
-        box.Child = row;
-        ConfigureDropTarget(box, group, omit);
+        var content = new Grid();
+        content.Children.Add(row);
+        content.Children.Add(insertionIndicator);
+        Border? emptyCollectionInsertionIndicator = null;
+        if (cells.Count == 0)
+        {
+            emptyCollectionInsertionIndicator = insertionIndicator;
+        }
+
+        box.Child = content;
+        ConfigureDropTarget(box, group, omit, emptyCollectionInsertionIndicator);
         return box;
     }
 

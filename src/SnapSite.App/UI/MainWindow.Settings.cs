@@ -533,8 +533,12 @@ public sealed partial class MainWindow
 
         var hwpxPaperTemplate = PaperTemplateInputsFor(paperTemplates.Hwpx!, state.ExportSettings.HwpxImageDpi, state.ExportSettings.HwpxJpegQuality);
         var docxPaperTemplate = PaperTemplateInputsFor(paperTemplates.Docx!, state.ExportSettings.DocxImageDpi, state.ExportSettings.DocxJpegQuality);
-        var page3 = SettingsPageInputsFor(state.ExportSettings.Page3!);
-        var page4 = SettingsPageInputsFor(state.ExportSettings.Page4!);
+        var pageInputs = Enumerable.Range(
+                PhotoGroup.MinCntPerPage,
+                PhotoGroup.MaxCntPerPage - PhotoGroup.MinCntPerPage + 1)
+            .ToDictionary(
+                count => count,
+                count => SettingsPageInputsFor(state.ExportSettings.SettingsFor(count)));
 
         var dialog = new Window
         {
@@ -544,7 +548,7 @@ public sealed partial class MainWindow
             MinWidth = 1280,
             MinHeight = 700,
             Background = Brushes.White,
-            Content = BuildSettingsDialogContent(paperTemplates, hwpxPaperTemplate, docxPaperTemplate, page3, page4)
+            Content = BuildSettingsDialogContent(paperTemplates, hwpxPaperTemplate, docxPaperTemplate, pageInputs)
         };
 
         if (dialog.Content is Grid grid &&
@@ -553,7 +557,7 @@ public sealed partial class MainWindow
             buttons.Children.OfType<StackPanel>().SelectMany(panel => panel.Children.OfType<Button>()).FirstOrDefault(button => Equals(button.Tag, "save")) is { } save &&
             buttons.Children.OfType<StackPanel>().SelectMany(panel => panel.Children.OfType<Button>()).FirstOrDefault(button => Equals(button.Tag, "close")) is { } close)
         {
-            defaults.Click += (_, _) => ResetSettingsInputsToDefaults(hwpxPaperTemplate, docxPaperTemplate, page3, page4);
+            defaults.Click += (_, _) => ResetSettingsInputsToDefaults(hwpxPaperTemplate, docxPaperTemplate, pageInputs);
             save.Click += (_, _) =>
             {
                 if (string.IsNullOrWhiteSpace(state.RootDir))
@@ -569,8 +573,10 @@ public sealed partial class MainWindow
                 state.ExportSettings.DocxImageDpi = ReadImageDpiInput(docxPaperTemplate.ImageDpi);
                 state.ExportSettings.HwpxJpegQuality = ReadJpegQualityInput(hwpxPaperTemplate.JpegQuality);
                 state.ExportSettings.DocxJpegQuality = ReadJpegQualityInput(docxPaperTemplate.JpegQuality);
-                ReadPageInputs(page3, state.ExportSettings.Page3!);
-                ReadPageInputs(page4, state.ExportSettings.Page4!);
+                foreach (var (count, inputs) in pageInputs)
+                {
+                    ReadPageInputs(inputs, state.ExportSettings.SettingsFor(count));
+                }
                 state.ExportSettings.Normalize();
 
                 if (SaveToMetadata("설정을 저장했습니다", refreshAfterSave: false))
@@ -588,8 +594,7 @@ public sealed partial class MainWindow
         PaperTemplateFormatSettings paperTemplates,
         PaperTemplateInputSet hwpxPaperTemplateInputs,
         PaperTemplateInputSet docxPaperTemplateInputs,
-        SettingsPageInputSet page3,
-        SettingsPageInputSet page4)
+        IReadOnlyDictionary<int, SettingsPageInputSet> pageInputs)
     {
         var grid = new Grid
         {
@@ -628,18 +633,24 @@ public sealed partial class MainWindow
         AddToGrid(commonContent, formatTabs, 0, 0);
         AddToGrid(commonContent, commonBodyHost, 0, 1);
         var commonView = SettingsPageScroll(commonContent);
-        var page3Preview = new ContentControl();
-        var page4Preview = new ContentControl();
+        var pagePreviews = pageInputs.Keys.ToDictionary(count => count, _ => new ContentControl());
         PaperTemplateInputSet CurrentPaperTemplateInputs()
         {
             return selectedPaperFormat == PaperTemplateFormat.Hwpx ? hwpxPaperTemplateInputs : docxPaperTemplateInputs;
         }
 
-        void RefreshPhotoPagePreviews()
+        void RefreshPhotoPagePreview(int count)
         {
             var template = PaperTemplateFromInputs(CurrentPaperTemplateInputs(), selectedPaperFormat == PaperTemplateFormat.Docx ? 80 : 160);
-            page3Preview.Content = SettingsPreview(3, template, WorkCellFromInputs(page3.HwpxWorkCell));
-            page4Preview.Content = SettingsPreview(4, template, WorkCellFromInputs(page4.HwpxWorkCell));
+            pagePreviews[count].Content = SettingsPreview(count, template, WorkCellFromInputs(pageInputs[count].HwpxWorkCell));
+        }
+
+        void RefreshPhotoPagePreviews()
+        {
+            foreach (var count in pageInputs.Keys)
+            {
+                RefreshPhotoPagePreview(count);
+            }
         }
 
         void SelectPaperFormat(PaperTemplateFormat format)
@@ -665,42 +676,106 @@ public sealed partial class MainWindow
             paperTemplateInputs.BodySubtitleFontPt.TextChanged += (_, _) => RefreshPhotoPagePreviews();
             paperTemplateInputs.FontFamily.TextChanged += (_, _) => RefreshPhotoPagePreviews();
         }
-        foreach (var input in new[] { page3.HwpxWorkCell.Height, page3.HwpxWorkCell.Width, page4.HwpxWorkCell.Height, page4.HwpxWorkCell.Width })
+        foreach (var (count, inputs) in pageInputs)
         {
-            input.TextChanged += (_, _) => RefreshPhotoPagePreviews();
+            inputs.HwpxWorkCell.Height.TextChanged += (_, _) => RefreshPhotoPagePreview(count);
+            inputs.HwpxWorkCell.Width.TextChanged += (_, _) => RefreshPhotoPagePreview(count);
         }
 
-        var page3View = SettingsPageScroll(SettingsPagePanel(3, page3, page3Preview));
-        var page4View = SettingsPageScroll(SettingsPagePanel(4, page4, page4Preview));
+        var pageViews = pageInputs.Keys.ToDictionary(
+            count => count,
+            count => SettingsPageScroll(SettingsPagePanel(count, pageInputs[count], pagePreviews[count])));
         var contentHost = new ContentControl
         {
             Content = commonView
         };
         var commonTab = SettingsTopTabButton("공통", selected: true);
-        var page3Tab = SettingsTopTabButton("1~3장 기준", selected: false);
-        var page4Tab = SettingsTopTabButton("4~10장 기준", selected: false);
-
-        void SelectTab(int page)
+        var countCombo = new ComboBox
         {
-            commonTab.Classes.Set("selected", page == 0);
-            page3Tab.Classes.Set("selected", page == 3);
-            page4Tab.Classes.Set("selected", page == 4);
-            commonTab.Background = page == 0 ? Brush("#e9eef2") : Brushes.Transparent;
-            page3Tab.Background = page == 3 ? Brush("#e9eef2") : Brushes.Transparent;
-            page4Tab.Background = page == 4 ? Brush("#e9eef2") : Brushes.Transparent;
-            contentHost.Content = page switch
+            ItemsSource = Enumerable.Range(
+                PhotoGroup.MinCntPerPage,
+                PhotoGroup.MaxCntPerPage - PhotoGroup.MinCntPerPage + 1),
+            SelectedItem = PhotoGroup.DefaultCntPerPage,
+            Width = 64,
+            Height = 30,
+            Padding = new Thickness(8, 0),
+            FontSize = 15,
+            Foreground = Brushes.Black,
+            Background = Brushes.White,
+            BorderBrush = Brush("#b8c0c8"),
+            BorderThickness = new Thickness(1),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var pageTabContent = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Spacing = 8,
+            VerticalAlignment = VerticalAlignment.Center,
+            Children =
             {
-                0 => commonView,
-                3 => page3View,
-                _ => page4View
-            };
+                new TextBlock
+                {
+                    Text = "한 페이지당",
+                    FontSize = 17,
+                    FontWeight = FontWeight.Bold,
+                    Foreground = Brushes.Black,
+                    VerticalAlignment = VerticalAlignment.Center
+                },
+                countCombo,
+                new TextBlock
+                {
+                    Text = "장",
+                    FontSize = 17,
+                    FontWeight = FontWeight.Bold,
+                    Foreground = Brushes.Black,
+                    VerticalAlignment = VerticalAlignment.Center
+                }
+            }
+        };
+        var pageTab = new Border
+        {
+            Padding = new Thickness(20, 8),
+            Background = Brushes.Transparent,
+            CornerRadius = new CornerRadius(8),
+            Child = pageTabContent
+        };
+        var selectedPageCount = PhotoGroup.DefaultCntPerPage;
+
+        void SelectCommonTab()
+        {
+            commonTab.Classes.Set("selected", true);
+            commonTab.Background = Brush("#e9eef2");
+            pageTab.Background = Brushes.Transparent;
+            contentHost.Content = commonView;
         }
 
-        commonTab.Click += (_, _) => SelectTab(0);
-        page3Tab.Click += (_, _) => SelectTab(3);
-        page4Tab.Click += (_, _) => SelectTab(4);
+        void SelectPageTab()
+        {
+            commonTab.Classes.Set("selected", false);
+            commonTab.Background = Brushes.Transparent;
+            pageTab.Background = Brush("#e9eef2");
+            contentHost.Content = pageViews[selectedPageCount];
+        }
 
-        AddToGrid(grid, SettingsTopTabs(commonTab, page3Tab, page4Tab), 0, 0);
+        commonTab.Click += (_, _) => SelectCommonTab();
+        pageTab.PointerPressed += (_, args) =>
+        {
+            if (args.GetCurrentPoint(pageTab).Properties.IsLeftButtonPressed)
+            {
+                SelectPageTab();
+            }
+        };
+        countCombo.SelectionChanged += (_, _) =>
+        {
+            if (countCombo.SelectedItem is int count)
+            {
+                selectedPageCount = PhotoGroup.NormalizeCntPerPage(count);
+                RefreshPhotoPagePreview(selectedPageCount);
+                SelectPageTab();
+            }
+        };
+
+        AddToGrid(grid, SettingsTopTabs(commonTab, pageTab), 0, 0);
         AddToGrid(grid, contentHost, 0, 1);
 
         var buttons = new DockPanel
@@ -754,7 +829,7 @@ public sealed partial class MainWindow
         return button;
     }
 
-    private static Control SettingsTopTabs(Button commonTab, Button page3Tab, Button page4Tab)
+    private static Control SettingsTopTabs(Button commonTab, Control pageTab)
     {
         var tabs = new StackPanel
         {
@@ -765,9 +840,7 @@ public sealed partial class MainWindow
             {
                 commonTab,
                 SettingsTabDivider(),
-                page3Tab,
-                SettingsTabDivider(),
-                page4Tab
+                pageTab
             }
         };
 
@@ -865,8 +938,7 @@ public sealed partial class MainWindow
     private static void ResetSettingsInputsToDefaults(
         PaperTemplateInputSet hwpxPaperTemplate,
         PaperTemplateInputSet docxPaperTemplate,
-        SettingsPageInputSet page3,
-        SettingsPageInputSet page4)
+        IReadOnlyDictionary<int, SettingsPageInputSet> pageInputs)
     {
         var defaultTemplate = new PaperTemplateSettings();
         defaultTemplate.Normalize();
@@ -881,8 +953,10 @@ public sealed partial class MainWindow
         WriteImageDpiInput(docxPaperTemplate, defaultSettings.DocxImageDpi);
         WriteJpegQualityInput(hwpxPaperTemplate, defaultSettings.HwpxJpegQuality);
         WriteJpegQualityInput(docxPaperTemplate, defaultSettings.DocxJpegQuality);
-        WritePageInputs(page3, defaultSettings.Page3!);
-        WritePageInputs(page4, defaultSettings.Page4!);
+        foreach (var (count, inputs) in pageInputs)
+        {
+            WritePageInputs(inputs, defaultSettings.SettingsFor(count));
+        }
     }
 
     private static void WritePaperTemplateInputs(PaperTemplateInputSet inputs, PaperTemplateSettings settings)
@@ -1332,6 +1406,7 @@ public sealed partial class MainWindow
 
     private static Control SettingsPreview(int cntPerPage, PaperTemplateSettings template, WorkCellSizeSettings workCell)
     {
+        cntPerPage = PhotoGroup.NormalizeCntPerPage(cntPerPage);
         template.Normalize();
         workCell.Normalize();
         var root = new StackPanel
@@ -1355,6 +1430,7 @@ public sealed partial class MainWindow
 
     private static Control SettingsPreviewPage(int cntPerPage, PaperTemplateSettings template, WorkCellSizeSettings workCell)
     {
+        cntPerPage = PhotoGroup.NormalizeCntPerPage(cntPerPage);
         var canvas = new Canvas();
         const double pageWidth = SettingsPreviewPaperWidth;
         const double pageHeight = SettingsPreviewPaperHeight;
@@ -1410,36 +1486,35 @@ public sealed partial class MainWindow
         canvas.Children.Add(PreviewLine(tableLeft, tableTop + titleHeight + rowHeight * cntPerPage, tableWidth, horizontal: true));
         canvas.Children.Add(PreviewLine(tableLeft + labelWidth, tableTop + titleHeight + rowHeight * cntPerPage, bottomTitleHeight, horizontal: false));
 
-        var labels = cntPerPage == 4
-            ? new[] { "전", "중1", "중2", "후" }
-            : new[] { "전", "중", "후" };
         for (var i = 0; i < cntPerPage; i++)
         {
             var y = tableTop + titleHeight + rowHeight * i;
             var imageWidth = tableWidth - labelWidth - 112;
-            var imageHeight = Math.Min(rowHeight - 46, cntPerPage == 4 ? 84 : 112);
-            var imageLeft = tableLeft + labelWidth + 52;
-            var imageTop = y + Math.Max(18, (rowHeight - imageHeight) / 2);
-            canvas.Children.Add(PreviewText(labels[i], tableLeft + 14, y + rowHeight / 2 - 9, labelWidth - 9, 18, center: false, fontSize: 12, bold: true));
-
-            var shouldShowPhoto = cntPerPage == 3 || i < 2;
-            if (shouldShowPhoto)
+            var preferredImageHeight = cntPerPage switch
             {
-                var image = new Border
-                {
-                    Width = imageWidth,
-                    Height = imageHeight,
-                    Background = Brush("#e8edf2"),
-                    BorderBrush = Brush("#777"),
-                    BorderThickness = new Thickness(1)
-                };
-                Canvas.SetLeft(image, imageLeft);
-                Canvas.SetTop(image, imageTop);
-                canvas.Children.Add(image);
-                canvas.Children.Add(PreviewText("사진", imageLeft, imageTop + imageHeight / 2 - 8, imageWidth, 16, center: true, blue: true, fontSize: 12, bold: true));
-            }
+                <= 3 => 112,
+                4 => 84,
+                _ => Math.Max(8, rowHeight - 10)
+            };
+            var imageHeight = Math.Max(8, Math.Min(Math.Max(8, rowHeight - 8), preferredImageHeight));
+            var imageLeft = tableLeft + labelWidth + 52;
+            var imageTop = y + Math.Max(4, (rowHeight - imageHeight) / 2);
+            canvas.Children.Add(PreviewText(SettingsPreviewPhaseLabel(i, cntPerPage), tableLeft + 14, y + rowHeight / 2 - 9, labelWidth - 9, 18, center: false, fontSize: 12, bold: true));
 
-            if (i == Math.Min(1, cntPerPage - 1))
+            var image = new Border
+            {
+                Width = imageWidth,
+                Height = imageHeight,
+                Background = Brush("#e8edf2"),
+                BorderBrush = Brush("#777"),
+                BorderThickness = new Thickness(1)
+            };
+            Canvas.SetLeft(image, imageLeft);
+            Canvas.SetTop(image, imageTop);
+            canvas.Children.Add(image);
+            canvas.Children.Add(PreviewText("사진", imageLeft, imageTop + imageHeight / 2 - 8, imageWidth, 16, center: true, blue: true, fontSize: 12, bold: true));
+
+            if (i == Math.Min(1, cntPerPage - 1) && rowHeight >= 60)
             {
                 var centerX = tableLeft + tableWidth / 2;
                 var topGuideTop = y + 8;
@@ -1473,6 +1548,21 @@ public sealed partial class MainWindow
         canvas.Children.Add(PreviewLine(tableLeft + labelWidth, tableTop + tableHeight, 32, horizontal: false, orange: true));
         canvas.Children.Add(PreviewLine(tableLeft, tableTop + tableHeight + 27, labelWidth, horizontal: true, orange: true));
         return canvas;
+    }
+
+    private static string SettingsPreviewPhaseLabel(int index, int count)
+    {
+        if (count == 1 || index == 0)
+        {
+            return "전";
+        }
+
+        if (index == count - 1)
+        {
+            return "후";
+        }
+
+        return count == 3 ? "중" : $"중{index}";
     }
 
     private static Control PreviewText(string text, double left, double top, double width, double height, bool center, bool blue = false, double fontSize = 11, bool bold = false, string? fontFamily = null)

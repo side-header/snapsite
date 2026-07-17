@@ -56,7 +56,7 @@ The `공종 페이지 추가` action belongs to the classified-area header and i
 - The information button is placed to the left of `폴더 열기`.
 - The dialog shows the program version and thumbnail cache location.
 - The dialog includes a `캐시 클리어` button below the cache location so the user can clear the thumbnail cache manually.
-- The program version is hard-coded as `v0.1.3`.
+- The program version is hard-coded as `0.1.4`.
 - The dialog content is shown as a compact table and closes with an `확인` button.
 
 ## Unclassified Photo Area

@@ -24,10 +24,15 @@ public sealed class ExportSettings
     public int DocxJpegQuality { get; set; } = DefaultJpegQuality;
 
     [JsonPropertyName("page3")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ExportPageSettings? Page3 { get; set; }
 
     [JsonPropertyName("page4")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public ExportPageSettings? Page4 { get; set; }
+
+    [JsonPropertyName("pages")]
+    public Dictionary<int, ExportPageSettings>? Pages { get; set; }
 
     [JsonPropertyName("hwpx")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -127,10 +132,29 @@ public sealed class ExportSettings
         legacySettings.DocxPhoto ??= DocxPhoto;
         legacySettings.Normalize();
 
-        Page3 ??= legacySettings.Clone();
-        Page4 ??= legacySettings.Clone();
-        Page3.Normalize();
-        Page4.Normalize();
+        Pages ??= [];
+        var page3Source = Pages.TryGetValue(3, out var existingPage3) && existingPage3 is not null
+            ? existingPage3
+            : Page3 ?? legacySettings;
+        var page4Source = Pages.TryGetValue(4, out var existingPage4) && existingPage4 is not null
+            ? existingPage4
+            : Page4 ?? legacySettings;
+        foreach (var count in Enumerable.Range(
+                     PhotoGroup.MinCntPerPage,
+                     PhotoGroup.MaxCntPerPage - PhotoGroup.MinCntPerPage + 1))
+        {
+            if (!Pages.TryGetValue(count, out var pageSettings) || pageSettings is null)
+            {
+                Pages[count] = (count <= 3 ? page3Source : page4Source).Clone();
+            }
+            Pages[count].Normalize();
+        }
+        foreach (var count in Pages.Keys
+                     .Where(count => count < PhotoGroup.MinCntPerPage || count > PhotoGroup.MaxCntPerPage)
+                     .ToList())
+        {
+            Pages.Remove(count);
+        }
         HwpxImageDpi = NormalizeImageDpi(HwpxImageDpi);
         DocxImageDpi = NormalizeImageDpi(DocxImageDpi);
         HwpxJpegQuality = NormalizeJpegQuality(HwpxJpegQuality);
@@ -142,13 +166,15 @@ public sealed class ExportSettings
         DocxCell = null;
         HwpxPhoto = null;
         DocxPhoto = null;
+        Page3 = null;
+        Page4 = null;
         ExtensionData = null;
     }
 
     public ExportPageSettings SettingsFor(int cntPerPage)
     {
         Normalize();
-        return PhotoGroup.NormalizeCntPerPage(cntPerPage) >= 4 ? Page4! : Page3!;
+        return Pages![PhotoGroup.NormalizeCntPerPage(cntPerPage)];
     }
 
     private ExportPageSettings LegacySettings()

@@ -1,4 +1,5 @@
 using Avalonia;
+using Avalonia.Animation;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
@@ -23,7 +24,14 @@ public sealed partial class MainWindow
         "^(?<number>[0-9]+)(?<phase>전|중|후)$",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
-    private Control AssignedPhotoCard(PhotoGroup group, bool omit, PhotoCell cell, int cellIndex, double width)
+    private Control AssignedPhotoCard(
+        PhotoGroup group,
+        bool omit,
+        PhotoCell cell,
+        int cellIndex,
+        double width,
+        Border insertionIndicator,
+        double collectionWidth)
     {
         var relativePath = cell.Image;
         var hasPhoto = !string.IsNullOrWhiteSpace(relativePath);
@@ -86,7 +94,15 @@ public sealed partial class MainWindow
                 Child = cellContent
             };
             cellContent.Children.Add(slot);
-            ConfigurePhotoSlotDropTarget(emptySlot, group, omit, cellIndex);
+            ConfigureClassifiedCellDragSource(emptySlot, group, omit, cellIndex, cell.Image);
+            ConfigurePhotoSlotDropTarget(
+                emptySlot,
+                group,
+                omit,
+                cellIndex,
+                width,
+                collectionWidth,
+                insertionIndicator);
             return emptySlot;
         }
 
@@ -100,6 +116,8 @@ public sealed partial class MainWindow
         ConfigureImagePreviewTrigger(image, relativePath, _ =>
         {
             SelectGroupForPreview(group.Id);
+            ShowPhotoPathInStatus(relativePath);
+            RevealPhotosInUnclassifiedArea([relativePath]);
             return false;
         });
         _ = LoadThumbnailIntoAsync(image, relativePath);
@@ -113,7 +131,6 @@ public sealed partial class MainWindow
             {
                 SelectGroupForPreview(group.Id);
             });
-        SetPhotoPathToolTip(name, relativePath);
 
         var cardContent = new StackPanel
         {
@@ -139,6 +156,42 @@ public sealed partial class MainWindow
             HorizontalAlignment = HorizontalAlignment.Center,
             Child = cardContent
         };
+        classifiedPhotoCardViews.TryAdd(AppState.NormalizePath(relativePath), photoCard);
+        Point? navigationStart = null;
+        photoCard.PointerPressed += (_, args) =>
+        {
+            var point = args.GetCurrentPoint(photoCard);
+            if (!point.Properties.IsLeftButtonPressed)
+            {
+                return;
+            }
+
+            navigationStart = point.Position;
+        };
+        photoCard.PointerReleased += (_, args) =>
+        {
+            if (navigationStart is null)
+            {
+                return;
+            }
+
+            if (args.Source is Image)
+            {
+                navigationStart = null;
+                return;
+            }
+
+            var delta = args.GetPosition(photoCard) - navigationStart.Value;
+            navigationStart = null;
+            if (Math.Abs(delta.X) >= 6 || Math.Abs(delta.Y) >= 6)
+            {
+                return;
+            }
+
+            SelectGroupForPreview(group.Id);
+            ShowPhotoPathInStatus(relativePath);
+            RevealPhotosInUnclassifiedArea([relativePath]);
+        };
         slot.Children.Add(ClassifiedCardWithControls(photoCard, group, omit, cellIndex, cardWidth, cardHeight));
         cellContent.Children.Add(slot);
 
@@ -153,9 +206,53 @@ public sealed partial class MainWindow
             CornerRadius = new CornerRadius(0),
             Child = cellContent
         };
-        ConfigureDragSource(card, relativePath);
-        ConfigurePhotoSlotDropTarget(card, group, omit, cellIndex);
+        ConfigureClassifiedCellDragSource(card, group, omit, cellIndex, relativePath);
+        ConfigurePhotoSlotDropTarget(
+            card,
+            group,
+            omit,
+            cellIndex,
+            width,
+            collectionWidth,
+            insertionIndicator);
         return card;
+    }
+
+    private static Border ClassifiedCellInsertionIndicator()
+    {
+        return new Border
+        {
+            Width = 3,
+            Margin = new Thickness(0),
+            Background = Brush("#2f80ed"),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            IsHitTestVisible = false,
+            IsVisible = false
+        };
+    }
+
+    private static void ShowClassifiedCellInsertionIndicator(
+        Border indicator,
+        double boundaryX,
+        double collectionWidth)
+    {
+        var lineWidth = indicator.Width;
+        var maximumLeft = Math.Max(0, collectionWidth - lineWidth);
+        var left = Math.Clamp(boundaryX - lineWidth / 2, 0, maximumLeft);
+        indicator.HorizontalAlignment = HorizontalAlignment.Left;
+        indicator.Margin = new Thickness(left, 0, 0, 0);
+        indicator.IsVisible = true;
+    }
+
+    private void ShowPhotoPathInStatus(string relativePath)
+    {
+        if (string.IsNullOrWhiteSpace(state.RootDir) || string.IsNullOrWhiteSpace(relativePath))
+        {
+            return;
+        }
+
+        status.Text = FileScanner.ToAbsolutePath(state.RootDir, relativePath);
     }
 
     private Control ClassifiedCardWithControls(
@@ -444,8 +541,6 @@ public sealed partial class MainWindow
                     SelectUnclassifiedPhoto(relativePath, modifiers);
                     return HasSelectionModifier(modifiers);
                 });
-        SetPhotoPathToolTip(name, relativePath);
-
         var content = new StackPanel { Spacing = 4 };
         image.Opacity = assigned ? 0.32 : 1.0;
         content.Children.Add(image);
@@ -535,6 +630,11 @@ public sealed partial class MainWindow
             CornerRadius = new CornerRadius(6),
             Child = cardBody
         };
+        if (assigned)
+        {
+            ConfigurePhotoPathStatusClick(card, relativePath);
+        }
+        renderedUnclassifiedPhotoCards.Add((relativePath, card));
         card.PointerEntered += (_, _) => card.BorderBrush = Brush("#2f80ed");
         card.PointerExited += (_, _) => card.BorderBrush = RestingBorderBrush();
         card.Classes.Add(UnclassifiedPhotoCardClass);
@@ -572,6 +672,158 @@ public sealed partial class MainWindow
         return card;
     }
 
+    private void ConfigurePhotoPathStatusClick(Control control, string relativePath)
+    {
+        Point? clickStart = null;
+        control.AddHandler(
+            InputElement.PointerPressedEvent,
+            (_, args) =>
+            {
+                var point = args.GetCurrentPoint(control);
+                if (point.Properties.IsLeftButtonPressed)
+                {
+                    clickStart = point.Position;
+                }
+            },
+            RoutingStrategies.Tunnel,
+            handledEventsToo: true);
+        control.AddHandler(
+            InputElement.PointerReleasedEvent,
+            (_, args) =>
+            {
+                if (clickStart is null)
+                {
+                    return;
+                }
+
+                var delta = args.GetPosition(control) - clickStart.Value;
+                clickStart = null;
+                if (Math.Abs(delta.X) < 6 && Math.Abs(delta.Y) < 6)
+                {
+                    ShowPhotoPathInStatus(relativePath);
+                    RevealPhotoInClassifiedArea(relativePath);
+                }
+            },
+            RoutingStrategies.Tunnel,
+            handledEventsToo: true);
+    }
+
+    private void RevealPhotoInClassifiedArea(string relativePath)
+    {
+        var normalizedPath = AppState.NormalizePath(relativePath);
+        if (!classifiedPhotoCardViews.TryGetValue(normalizedPath, out var targetCard))
+        {
+            return;
+        }
+
+        ScrollClassifiedPhotoIntoPreferredPosition(targetCard);
+        HighlightClassifiedPhotoCard(targetCard);
+    }
+
+    private void ScrollClassifiedPhotoIntoPreferredPosition(Border targetCard)
+    {
+        var horizontalScroller = targetCard
+            .GetVisualAncestors()
+            .OfType<ScrollViewer>()
+            .FirstOrDefault(scrollViewer => !ReferenceEquals(scrollViewer, classifiedScrollViewer));
+        if (horizontalScroller?.Content is Control horizontalContent && horizontalScroller.Viewport.Width > 0)
+        {
+            var targetCenter = targetCard.TranslatePoint(
+                new Point(targetCard.Bounds.Width / 2, 0),
+                horizontalContent);
+            if (targetCenter is not null)
+            {
+                var maximumOffset = Math.Max(0, horizontalScroller.Extent.Width - horizontalScroller.Viewport.Width);
+                var targetOffset = Math.Clamp(
+                    targetCenter.Value.X - horizontalScroller.Viewport.Width / 2,
+                    0,
+                    maximumOffset);
+                horizontalScroller.Offset = new Vector(targetOffset, horizontalScroller.Offset.Y);
+            }
+        }
+        else
+        {
+            targetCard.BringIntoView();
+        }
+
+        if (classifiedScrollViewer is not { } outerScroller || outerScroller.Viewport.Height <= 0)
+        {
+            targetCard.BringIntoView();
+            return;
+        }
+
+        var verticalCenter = targetCard.TranslatePoint(
+            new Point(0, targetCard.Bounds.Height / 2),
+            rightPanel);
+        if (verticalCenter is null)
+        {
+            targetCard.BringIntoView();
+            return;
+        }
+
+        var maximumVerticalOffset = Math.Max(0, outerScroller.Extent.Height - outerScroller.Viewport.Height);
+        var verticalOffset = Math.Clamp(
+            verticalCenter.Value.Y - outerScroller.Viewport.Height * 0.4,
+            0,
+            maximumVerticalOffset);
+        outerScroller.Offset = new Vector(outerScroller.Offset.X, verticalOffset);
+    }
+
+    private void HighlightClassifiedPhotoCard(Border card)
+    {
+        var version = ++classifiedPhotoHighlightVersion;
+        classifiedPhotoHighlightVersions[card] = version;
+        card.Transitions = null;
+        card.Background = Brush("#eaf4ff");
+        card.BorderBrush = Brush("#2f80ed");
+        card.Transitions = new Transitions
+        {
+            new BrushTransition
+            {
+                Property = Border.BackgroundProperty,
+                Duration = TimeSpan.FromMilliseconds(620)
+            },
+            new BrushTransition
+            {
+                Property = Border.BorderBrushProperty,
+                Duration = TimeSpan.FromMilliseconds(620)
+            }
+        };
+
+        DispatcherTimer.RunOnce(() =>
+        {
+            if (!IsCurrentClassifiedPhotoHighlight(card, version))
+            {
+                return;
+            }
+
+            card.Background = Brushes.White;
+            if (!card.IsPointerOver)
+            {
+                card.BorderBrush = Brush("#d8dde2");
+            }
+        }, TimeSpan.FromMilliseconds(60), DispatcherPriority.Render);
+
+        DispatcherTimer.RunOnce(() =>
+        {
+            if (!IsCurrentClassifiedPhotoHighlight(card, version))
+            {
+                return;
+            }
+
+            classifiedPhotoHighlightVersions.Remove(card);
+            card.Transitions = null;
+            card.Background = Brushes.White;
+            card.BorderBrush = card.IsPointerOver ? Brush("#2f80ed") : Brush("#d8dde2");
+        }, TimeSpan.FromMilliseconds(720), DispatcherPriority.Render);
+    }
+
+    private bool IsCurrentClassifiedPhotoHighlight(Border card, int version)
+    {
+        return classifiedPhotoHighlightVersions.TryGetValue(card, out var currentVersion) &&
+            currentVersion == version;
+    }
+
     private static bool IsShiftPressed(KeyModifiers modifiers)
     {
         return (modifiers & KeyModifiers.Shift) != 0;
@@ -594,6 +846,8 @@ public sealed partial class MainWindow
 
     private void SelectUnclassifiedPhoto(string relativePath, KeyModifiers modifiers)
     {
+        ShowPhotoPathInStatus(relativePath);
+
         if (isRule1Selection)
         {
             selectedPhotos.Clear();
@@ -889,9 +1143,10 @@ public sealed partial class MainWindow
             summary.Text = $"사진 {selectedCount}장이 선택되었습니다 (규칙1 기준 선택 적용)";
             if (unclassifiedSelectionActionDetails is not null)
             {
-                unclassifiedSelectionActionDetails.Text = $"생성 예정 공종은 {groupCount}개입니다.\n" +
-                    "1전/1중/1후/2전/...처럼 숫자와 전/중/후 문자 조합으로 된 사진 파일만 선택되었습니다.\n" +
-                    "선택된 사진들은 폴더와 번호별로 새로운 공종 페이지에 추가되며, 공종 이름은 '폴더 이름 + 번호구역'으로, 사진은 전/중/후/나머지 영역으로 자동 분류됩니다.";
+                unclassifiedSelectionActionDetails.Text =
+                    "• 규칙1: 사진 파일 이름이 {숫자} + \"전\" | \"중\" | \"후\"인 경우\n" +
+                    $"• 공종 페이지 {groupCount}개 추가\n" +
+                    "• 공종 제목: \"{폴더 이름} {숫자}구역\"";
             }
             ApplyUnclassifiedSelectionActionPalette(action, "#eaf4ff", "#b9d8ff", "#2f80ed", "#246fd1", "#1d5db3");
             UpdateUnclassifiedSelectionActionExpansion();
@@ -989,15 +1244,13 @@ public sealed partial class MainWindow
             return;
         }
 
-        var firstCreatedGroupId = string.Empty;
+        var createdGroupIds = new List<string>();
         var assignedPhotoCount = 0;
         foreach (var plan in plans)
         {
             var group = state.AddGroup();
             group.Title = $"{plan.FolderName} {plan.AreaNumber}구역";
-            firstCreatedGroupId = string.IsNullOrWhiteSpace(firstCreatedGroupId)
-                ? group.Id
-                : firstCreatedGroupId;
+            createdGroupIds.Add(group.Id);
 
             var duplicatePhasePhotos = new List<string>();
             for (var phaseIndex = 0; phaseIndex < 3; phaseIndex++)
@@ -1024,13 +1277,14 @@ public sealed partial class MainWindow
             }
         }
 
-        selectedGroupId = firstCreatedGroupId;
+        selectedGroupId = createdGroupIds[0];
         var createdGroupCount = plans.Count;
         ClearUnclassifiedPhotoSelection();
         SaveToMetadata(
             $"규칙1 사진 {assignedPhotoCount}장으로 공종 {createdGroupCount}개를 추가했습니다",
             refreshAfterSave: false);
         RefreshAll();
+        ScheduleRevealCreatedClassifiedGroups(createdGroupIds);
     }
 
     private static List<Rule1GroupPlan> BuildRule1GroupPlans(
@@ -1161,139 +1415,6 @@ public sealed partial class MainWindow
         };
     }
 
-    private void SetPhotoPathToolTip(Control control, string relativePath)
-    {
-        if (string.IsNullOrWhiteSpace(state.RootDir) || string.IsNullOrWhiteSpace(relativePath))
-        {
-            return;
-        }
-
-        AttachPathTreePopup(control, state.RootDir, relativePath);
-    }
-
-    private void AttachPathTreePopup(Control control, string rootDir, string relativePath)
-    {
-        var popupContent = PathTreePopupContent(rootDir, relativePath);
-        var popup = new Popup
-        {
-            PlacementTarget = control,
-            Placement = PlacementMode.Bottom,
-            VerticalOffset = 1,
-            HorizontalOffset = 0,
-            IsLightDismissEnabled = false,
-            Child = popupContent
-        };
-        var pointerOverTarget = false;
-        var pointerOverPopup = false;
-
-        async void CloseWhenPointerLeaves()
-        {
-            await Task.Delay(160);
-            if (!pointerOverTarget && !pointerOverPopup && ReferenceEquals(activePathTreePopup, popup))
-            {
-                CloseActivePathTreePopup();
-            }
-        }
-
-        control.PointerEntered += (_, _) =>
-        {
-            pointerOverTarget = true;
-            if (!ReferenceEquals(activePathTreePopup, popup))
-            {
-                CloseActivePathTreePopup();
-                activePathTreePopup = popup;
-            }
-            popup.IsOpen = true;
-        };
-        control.PointerExited += (_, _) =>
-        {
-            pointerOverTarget = false;
-            CloseWhenPointerLeaves();
-        };
-        popupContent.PointerEntered += (_, _) =>
-        {
-            pointerOverPopup = true;
-        };
-        popupContent.PointerExited += (_, _) =>
-        {
-            pointerOverPopup = false;
-            CloseWhenPointerLeaves();
-        };
-        popup.Closed += (_, _) =>
-        {
-            if (ReferenceEquals(activePathTreePopup, popup))
-            {
-                activePathTreePopup = null;
-            }
-        };
-    }
-
-    private void CloseActivePathTreePopup()
-    {
-        if (activePathTreePopup is null)
-        {
-            return;
-        }
-
-        var popup = activePathTreePopup;
-        activePathTreePopup = null;
-        popup.IsOpen = false;
-    }
-
-    private static Control PathTreePopupContent(string rootDir, string relativePath)
-    {
-        var rootName = Path.GetFileName(rootDir.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-        if (string.IsNullOrWhiteSpace(rootName))
-        {
-            rootName = rootDir;
-        }
-
-        var segments = relativePath
-            .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-            .Where(segment => !string.IsNullOrWhiteSpace(segment))
-            .ToList();
-        var lines = new List<string> { rootName };
-        for (var i = 0; i < segments.Count; i++)
-        {
-            lines.Add(PathTreeText(segments[i], i + 1, isLast: i == segments.Count - 1));
-        }
-
-        var treeText = new SelectableTextBlock
-        {
-            Text = string.Join(Environment.NewLine, lines),
-            FontSize = 12,
-            FontFamily = FontFamily.Parse("Menlo, Consolas, monospace"),
-            Foreground = Brush("#1f252a"),
-            TextWrapping = TextWrapping.NoWrap,
-            SelectionBrush = Brush("#cfe8ff"),
-            SelectionForegroundBrush = Brushes.Black
-        };
-
-        var scroll = new ScrollViewer
-        {
-            Content = treeText,
-            MinWidth = 260,
-            MaxWidth = 640,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Disabled
-        };
-
-        return new Border
-        {
-            Background = Brush("#f3f5f7"),
-            BorderBrush = Brush("#d8dde2"),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(4),
-            Padding = new Thickness(10, 8),
-            Child = scroll
-        };
-    }
-
-    private static string PathTreeText(string text, int depth, bool isLast)
-    {
-        return new string(' ', Math.Max(0, depth - 1) * 3) + (isLast ? "└─ " : "├─ ") + text;
-    }
-
     private void ConfigureDragSource(Control control, string relativePath)
     {
         control.PointerPressed += (_, e) =>
@@ -1353,11 +1474,90 @@ public sealed partial class MainWindow
         };
     }
 
-    private void ConfigurePhotoSlotDropTarget(Control control, PhotoGroup targetGroup, bool omit, int cellIndex)
+    private void ConfigureClassifiedCellDragSource(
+        Control control,
+        PhotoGroup group,
+        bool omit,
+        int cellIndex,
+        string relativePath)
+    {
+        Point? cellDragStart = null;
+        control.PointerPressed += (_, e) =>
+        {
+            if (e.Source is TextBox or Button)
+            {
+                return;
+            }
+
+            var point = e.GetCurrentPoint(control);
+            if (point.Properties.IsLeftButtonPressed)
+            {
+                cellDragStart = point.Position;
+            }
+        };
+
+        control.PointerMoved += async (_, e) =>
+        {
+            if (cellDragStart is null)
+            {
+                return;
+            }
+
+            var point = e.GetCurrentPoint(control);
+            if (!point.Properties.IsLeftButtonPressed)
+            {
+                cellDragStart = null;
+                return;
+            }
+
+            var delta = point.Position - cellDragStart.Value;
+            if (Math.Abs(delta.X) < 6 && Math.Abs(delta.Y) < 6)
+            {
+                return;
+            }
+
+            cellDragStart = null;
+            var payload = new ClassifiedCellDragData(
+                group.Id,
+                omit,
+                cellIndex,
+                AppState.NormalizePath(relativePath));
+            var data = new DataTransfer();
+            data.Add(DataTransferItem.CreateText(
+                ClassifiedCellDragPrefix + JsonSerializer.Serialize(payload)));
+            await DragDrop.DoDragDropAsync(e, data, DragDropEffects.Move);
+        };
+
+        control.PointerReleased += (_, _) => cellDragStart = null;
+    }
+
+    private void ConfigurePhotoSlotDropTarget(
+        Control control,
+        PhotoGroup targetGroup,
+        bool omit,
+        int cellIndex,
+        double slotWidth,
+        double collectionWidth,
+        Border insertionIndicator)
     {
         DragDrop.SetAllowDrop(control, true);
         DragDrop.AddDragOverHandler(control, (_, e) =>
         {
+            var classifiedCell = GetDroppedClassifiedCell(e);
+            if (classifiedCell is not null)
+            {
+                var insertAfter = e.GetPosition(control).X >= control.Bounds.Width / 2;
+                var insertionIndex = cellIndex + (insertAfter ? 1 : 0);
+                ShowClassifiedCellInsertionIndicator(
+                    insertionIndicator,
+                    insertionIndex * slotWidth,
+                    collectionWidth);
+                e.DragEffects = DragDropEffects.Move;
+                e.Handled = true;
+                return;
+            }
+
+            insertionIndicator.IsVisible = false;
             if (!CanDropPhoto(e))
             {
                 return;
@@ -1366,8 +1566,28 @@ public sealed partial class MainWindow
             e.DragEffects = DragDropEffects.Move;
             e.Handled = true;
         });
+        control.AddHandler(
+            DragDrop.DragLeaveEvent,
+            (_, _) => insertionIndicator.IsVisible = false,
+            RoutingStrategies.Bubble);
         DragDrop.AddDropHandler(control, (_, e) =>
         {
+            var classifiedCell = GetDroppedClassifiedCell(e);
+            if (classifiedCell is not null)
+            {
+                var insertAfter = e.GetPosition(control).X >= control.Bounds.Width / 2;
+                insertionIndicator.IsVisible = false;
+                MoveDroppedClassifiedCell(
+                    targetGroup,
+                    omit,
+                    cellIndex + (insertAfter ? 1 : 0),
+                    classifiedCell);
+                e.DragEffects = DragDropEffects.Move;
+                e.Handled = true;
+                return;
+            }
+
+            insertionIndicator.IsVisible = false;
             var relativePaths = GetDroppedPhotos(e);
             if (relativePaths.Count == 0)
             {
@@ -1383,7 +1603,8 @@ public sealed partial class MainWindow
             }
 
             var relativePath = relativePaths[0];
-            if (!state.PlacePhotoAt(targetGroup.Id, omit, cellIndex, relativePath, out var filledExistingCell))
+            var filledExistingCell = false;
+            if (!state.PlacePhotoAt(targetGroup.Id, omit, cellIndex, relativePath, out filledExistingCell))
             {
                 return;
             }
@@ -1393,7 +1614,7 @@ public sealed partial class MainWindow
                 ? $"{targetGroup.Title} > {(omit ? "나머지" : "대상")} 빈 셀에 이동했습니다: {relativePath}"
                 : $"{targetGroup.Title} > {(omit ? "나머지" : "대상")} 셀 오른쪽으로 이동했습니다: {relativePath}";
             SaveToMetadata("사진 위치를 저장했습니다", refreshAfterSave: false);
-            RefreshAll();
+            RefreshAfterAssigningPhotos(targetGroup, [relativePath]);
             e.DragEffects = DragDropEffects.Move;
             e.Handled = true;
         });
@@ -1459,7 +1680,36 @@ public sealed partial class MainWindow
         selectedGroupId = targetGroup.Id;
         status.Text = $"{targetGroup.Title}의 {destinationName} 영역에 사진 {assignedCount}장을 선택 순서대로 이동했습니다.";
         SaveToMetadata("사진 위치를 저장했습니다", refreshAfterSave: false);
-        RefreshAll();
+        RefreshAfterAssigningPhotos(targetGroup, relativePaths);
+    }
+
+    private void MoveDroppedClassifiedCell(
+        PhotoGroup targetGroup,
+        bool targetOmit,
+        int targetInsertionIndex,
+        ClassifiedCellDragData source)
+    {
+        if (!state.MoveAssignedPhotoCellToInsertionIndex(
+                targetGroup.Id,
+                targetOmit,
+                targetInsertionIndex,
+                source.GroupId,
+                source.Omit,
+                source.CellIndex))
+        {
+            return;
+        }
+
+        selectedGroupId = targetGroup.Id;
+        status.Text = $"{targetGroup.Title} > {(targetOmit ? "나머지" : "대상")} 영역으로 셀을 이동했습니다.";
+        SaveToMetadata("사진 셀 위치를 저장했습니다", refreshAfterSave: false);
+        RefreshPanelHeaders();
+        RefreshRight();
+        RefreshDetail();
+        if (!string.IsNullOrWhiteSpace(source.RelativePath))
+        {
+            ScheduleHighlightClassifiedPhotos([source.RelativePath]);
+        }
     }
 
     private void AssignDroppedPhotosBesideCell(
@@ -1480,7 +1730,110 @@ public sealed partial class MainWindow
         selectedGroupId = targetGroup.Id;
         status.Text = $"{targetGroup.Title}에 사진 {assignedCount}장을 드롭한 셀 옆으로 이동했습니다.";
         SaveToMetadata("사진 위치를 저장했습니다", refreshAfterSave: false);
-        RefreshAll();
+        RefreshAfterAssigningPhotos(targetGroup, relativePaths);
+    }
+
+    private void RefreshAfterAssigningPhotos(PhotoGroup targetGroup, IReadOnlyList<string> relativePaths)
+    {
+        var savedUnclassifiedOffset = unclassifiedTreeScrollViewer?.Offset;
+        var assignedGroupNumber = state.Groups.FindIndex(group => group.Id == targetGroup.Id) + 1;
+        var assignedPaths = relativePaths
+            .Select(AppState.NormalizePath)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var replacedAll = assignedGroupNumber > 0 && assignedPaths.Count > 0;
+        foreach (var relativePath in assignedPaths)
+        {
+            replacedAll &= ReplaceRenderedUnclassifiedPhotoCard(relativePath, assignedGroupNumber);
+        }
+
+        if (replacedAll)
+        {
+            UpdateUnclassifiedPhotoSelectionVisuals();
+        }
+        else
+        {
+            RefreshCenter();
+            RestoreUnclassifiedScrollOffset(savedUnclassifiedOffset);
+        }
+
+        RefreshPanelHeaders();
+        RefreshRight();
+        RefreshDetail();
+        ScheduleHighlightClassifiedPhotos(assignedPaths);
+    }
+
+    private void ScheduleHighlightClassifiedPhotos(IReadOnlyList<string> relativePaths)
+    {
+        var normalizedPaths = relativePaths
+            .Select(AppState.NormalizePath)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        DispatcherTimer.RunOnce(() =>
+        {
+            foreach (var relativePath in normalizedPaths)
+            {
+                if (classifiedPhotoCardViews.TryGetValue(relativePath, out var photoCard))
+                {
+                    HighlightClassifiedPhotoCard(photoCard);
+                }
+            }
+        }, TimeSpan.FromMilliseconds(16), DispatcherPriority.Render);
+    }
+
+    private bool ReplaceRenderedUnclassifiedPhotoCard(string relativePath, int assignedGroupNumber)
+    {
+        var renderedIndex = renderedUnclassifiedPhotoCards.FindIndex(candidate =>
+            AppState.SamePath(candidate.RelativePath, relativePath));
+        if (renderedIndex < 0)
+        {
+            return false;
+        }
+
+        var renderedCard = renderedUnclassifiedPhotoCards[renderedIndex];
+        if (renderedCard.Card.GetVisualParent() is not Panel parent)
+        {
+            return false;
+        }
+
+        var childIndex = parent.Children.IndexOf(renderedCard.Card);
+        if (childIndex < 0)
+        {
+            return false;
+        }
+
+        renderedUnclassifiedPhotoCards.RemoveAt(renderedIndex);
+        unclassifiedPhotoCardViews.Remove(relativePath);
+        visibleUnclassifiedPhotos.RemoveAll(path => AppState.SamePath(path, relativePath));
+
+        var replacement = PhotoCard(relativePath, assignedGroupNumber);
+        parent.Children.RemoveAt(childIndex);
+        parent.Children.Insert(childIndex, replacement);
+        return true;
+    }
+
+    private void RestoreUnclassifiedScrollOffset(Vector? savedOffset)
+    {
+        if (savedOffset is null)
+        {
+            return;
+        }
+
+        DispatcherTimer.RunOnce(() =>
+        {
+            if (unclassifiedTreeScrollViewer is not { } scrollViewer)
+            {
+                return;
+            }
+
+            var maximumX = Math.Max(0, scrollViewer.Extent.Width - scrollViewer.Viewport.Width);
+            var maximumY = Math.Max(0, scrollViewer.Extent.Height - scrollViewer.Viewport.Height);
+            scrollViewer.Offset = new Vector(
+                Math.Clamp(savedOffset.Value.X, 0, maximumX),
+                Math.Clamp(savedOffset.Value.Y, 0, maximumY));
+        }, TimeSpan.FromMilliseconds(16), DispatcherPriority.Render);
     }
 
     private void ConfigureGroupReorder(Control control, PhotoGroup group, double dragHandleHeight = 54)
@@ -1579,7 +1932,11 @@ public sealed partial class MainWindow
         });
     }
 
-    private void ConfigureDropTarget(Control control, PhotoGroup group, bool omit)
+    private void ConfigureDropTarget(
+        Control control,
+        PhotoGroup group,
+        bool omit,
+        Border? emptyCollectionInsertionIndicator = null)
     {
         DragDrop.SetAllowDrop(control, true);
         DragDrop.AddDragOverHandler(control, (_, e) =>
@@ -1589,9 +1946,36 @@ public sealed partial class MainWindow
                 return;
             }
 
-            e.DragEffects = CanDropPhoto(e) ? DragDropEffects.Move : DragDropEffects.None;
+            var classifiedCell = GetDroppedClassifiedCell(e);
+            if (emptyCollectionInsertionIndicator is not null)
+            {
+                if (classifiedCell is not null)
+                {
+                    ShowClassifiedCellInsertionIndicator(
+                        emptyCollectionInsertionIndicator,
+                        control.Bounds.Width / 2,
+                        control.Bounds.Width);
+                }
+                else
+                {
+                    emptyCollectionInsertionIndicator.IsVisible = false;
+                }
+            }
+            e.DragEffects = classifiedCell is not null || CanDropPhoto(e)
+                ? DragDropEffects.Move
+                : DragDropEffects.None;
             e.Handled = true;
         });
+        control.AddHandler(
+            DragDrop.DragLeaveEvent,
+            (_, _) =>
+            {
+                if (emptyCollectionInsertionIndicator is not null)
+                {
+                    emptyCollectionInsertionIndicator.IsVisible = false;
+                }
+            },
+            RoutingStrategies.Bubble);
         DragDrop.AddDropHandler(control, (_, e) =>
         {
             if (!string.IsNullOrWhiteSpace(GetDroppedGroup(e)))
@@ -1599,6 +1983,27 @@ public sealed partial class MainWindow
                 return;
             }
 
+            var classifiedCell = GetDroppedClassifiedCell(e);
+            if (classifiedCell is not null)
+            {
+                if (emptyCollectionInsertionIndicator is not null)
+                {
+                    emptyCollectionInsertionIndicator.IsVisible = false;
+                }
+                var targetCells = omit ? group.Omit : group.Target;
+                var classifiedInsertionIndex = targetCells.Count == 0
+                    ? 0
+                    : targetCells.Count;
+                MoveDroppedClassifiedCell(group, omit, classifiedInsertionIndex, classifiedCell);
+                e.DragEffects = DragDropEffects.Move;
+                e.Handled = true;
+                return;
+            }
+
+            if (emptyCollectionInsertionIndicator is not null)
+            {
+                emptyCollectionInsertionIndicator.IsVisible = false;
+            }
             var relativePaths = GetDroppedPhotos(e);
             if (relativePaths.Count == 0)
             {
@@ -1622,7 +2027,8 @@ public sealed partial class MainWindow
             {
                 targetIndex = cells.Count - 1;
             }
-            if (!state.PlacePhotoAt(group.Id, omit, targetIndex, relativePath, out var filledExistingCell))
+            var filledExistingCell = false;
+            if (!state.PlacePhotoAt(group.Id, omit, targetIndex, relativePath, out filledExistingCell))
             {
                 return;
             }
@@ -1631,7 +2037,7 @@ public sealed partial class MainWindow
                 ? $"{group.Title} > {(omit ? "나머지" : "대상")} 빈 셀에 이동했습니다: {relativePath}"
                 : $"{group.Title} > {(omit ? "나머지" : "대상")} 마지막 셀로 이동했습니다: {relativePath}";
             SaveToMetadata("사진 위치를 저장했습니다", refreshAfterSave: false);
-            RefreshAll();
+            RefreshAfterAssigningPhotos(group, [relativePath]);
             e.DragEffects = DragDropEffects.Move;
             e.Handled = true;
         });
@@ -1642,12 +2048,48 @@ public sealed partial class MainWindow
         return GetDroppedPhotos(e).Count > 0;
     }
 
+    private static ClassifiedCellDragData? GetDroppedClassifiedCell(DragEventArgs e)
+    {
+        var text = e.DataTransfer.TryGetText() ?? string.Empty;
+        if (!text.StartsWith(ClassifiedCellDragPrefix, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        try
+        {
+            var payload = JsonSerializer.Deserialize<ClassifiedCellDragData>(
+                text[ClassifiedCellDragPrefix.Length..]);
+            if (payload is null || string.IsNullOrWhiteSpace(payload.GroupId) || payload.CellIndex < 0)
+            {
+                return null;
+            }
+
+            return payload with
+            {
+                RelativePath = AppState.NormalizePath(payload.RelativePath ?? string.Empty)
+            };
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
     private static IReadOnlyList<string> GetDroppedPhotos(DragEventArgs e)
     {
         var text = e.DataTransfer.TryGetText() ?? string.Empty;
         if (string.IsNullOrWhiteSpace(text) || text.StartsWith(GroupDragPrefix, StringComparison.Ordinal))
         {
             return [];
+        }
+
+        if (text.StartsWith(ClassifiedCellDragPrefix, StringComparison.Ordinal))
+        {
+            var classifiedCell = GetDroppedClassifiedCell(e);
+            return classifiedCell is not null && !string.IsNullOrWhiteSpace(classifiedCell.RelativePath)
+                ? [classifiedCell.RelativePath]
+                : [];
         }
 
         if (!text.StartsWith(MultiPhotoDragPrefix, StringComparison.Ordinal))
@@ -1690,6 +2132,12 @@ public sealed partial class MainWindow
             ? text[GroupDragPrefix.Length..]
             : string.Empty;
     }
+
+    private sealed record ClassifiedCellDragData(
+        string GroupId,
+        bool Omit,
+        int CellIndex,
+        string RelativePath);
 
     private async Task LoadThumbnailIntoAsync(Image image, string relativePath)
     {

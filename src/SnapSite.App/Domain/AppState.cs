@@ -160,6 +160,52 @@ public sealed class AppState
         return true;
     }
 
+    public bool MoveAssignedPhotoCellToInsertionIndex(
+        string targetGroupId,
+        bool targetOmit,
+        int targetInsertionIndex,
+        string sourceGroupId,
+        bool sourceOmit,
+        int sourceCellIndex)
+    {
+        var targetGroup = GroupById(targetGroupId);
+        var sourceGroup = GroupById(sourceGroupId);
+        if (targetGroup is null || sourceGroup is null)
+        {
+            return false;
+        }
+
+        targetGroup.NormalizeCells();
+        sourceGroup.NormalizeCells();
+        var targetCells = targetOmit ? targetGroup.Omit : targetGroup.Target;
+        var sourceCells = sourceOmit ? sourceGroup.Omit : sourceGroup.Target;
+        if (sourceCellIndex < 0 || sourceCellIndex >= sourceCells.Count)
+        {
+            return false;
+        }
+
+        if (targetInsertionIndex < 0 || targetInsertionIndex > targetCells.Count)
+        {
+            return false;
+        }
+
+        var sourceCell = sourceCells[sourceCellIndex];
+        var adjustedInsertionIndex = targetInsertionIndex;
+        if (ReferenceEquals(sourceCells, targetCells) && sourceCellIndex < adjustedInsertionIndex)
+        {
+            adjustedInsertionIndex--;
+        }
+
+        if (ReferenceEquals(sourceCells, targetCells) && adjustedInsertionIndex == sourceCellIndex)
+        {
+            return false;
+        }
+
+        sourceCells.RemoveAt(sourceCellIndex);
+        targetCells.Insert(adjustedInsertionIndex, sourceCell);
+        return true;
+    }
+
     public int PlacePhotosBesideCell(
         string groupId,
         bool omit,

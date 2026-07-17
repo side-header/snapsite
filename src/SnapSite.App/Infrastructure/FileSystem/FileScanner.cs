@@ -4,7 +4,7 @@ namespace NewGreen.Infrastructure.FileSystem;
 
 public sealed class FileScanner
 {
-    private const int MaxFolderDepth = 3;
+    private const int MaxFolderDepth = 7;
 
     private static readonly HashSet<string> IgnoredDirectories = new(StringComparer.OrdinalIgnoreCase)
     {
