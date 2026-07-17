@@ -148,7 +148,7 @@ public sealed class ExportSettings
     public ExportPageSettings SettingsFor(int cntPerPage)
     {
         Normalize();
-        return cntPerPage == 4 ? Page4! : Page3!;
+        return PhotoGroup.NormalizeCntPerPage(cntPerPage) >= 4 ? Page4! : Page3!;
     }
 
     private ExportPageSettings LegacySettings()

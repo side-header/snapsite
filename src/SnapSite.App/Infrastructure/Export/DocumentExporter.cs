@@ -363,7 +363,7 @@ public sealed partial class DocumentExporter
                 items.Add(new ExportPageItem(cell.Label, image));
             }
 
-            var limit = group.CntPerPage == 4 ? 4 : 3;
+            var limit = PhotoGroup.NormalizeCntPerPage(group.CntPerPage);
             for (var i = 0; i < items.Count; i += limit)
             {
                 yield return new ExportPage(group.Title, limit, items.Skip(i).Take(limit).ToList());
@@ -511,7 +511,11 @@ public sealed partial class DocumentExporter
         var contentHeight = Math.Max(
             6000,
             DocxPageHeight - margin.TopTwips - margin.BottomTwips - DocxHeaderTwips - DocxFooterTwips - DocxTableVerticalSafetyTwips - DocxTemplateHeaderHeightTwips(template));
-        var rowHeight = Math.Max(1500, (contentHeight - titleHeight) / Math.Max(cntPerPage, 1));
+        var normalizedCount = PhotoGroup.NormalizeCntPerPage(cntPerPage);
+        var availableRowHeight = Math.Max(1, (contentHeight - titleHeight) / normalizedCount);
+        var rowHeight = normalizedCount <= 4
+            ? Math.Max(1500, availableRowHeight)
+            : availableRowHeight;
         return new DocxTableLayout(tableWidth, labelWidth, imageWidth, titleHeight, rowHeight);
     }
 
@@ -1135,7 +1139,7 @@ public sealed partial class DocumentExporter
         {
             builder.Append(HwpxParagraph(ref paragraphId, group.Title, "1", "2"));
             var countOnPage = 0;
-            var limit = group.CntPerPage == 4 ? 4 : 3;
+            var limit = PhotoGroup.NormalizeCntPerPage(group.CntPerPage);
 
             foreach (var cell in group.Target)
             {
@@ -1302,7 +1306,11 @@ public sealed partial class DocumentExporter
         var contentHeight = Math.Max(
             36000,
             HwpxPageHeight - margin.TopHwpx - margin.BottomHwpx - HwpxHeaderUnits - HwpxFooterUnits - (HwpxFixedOuterMarginUnits * 2) - HwpxTableVerticalSafetyUnits - HwpxTemplateHeaderHeightUnits(template));
-        var rowHeight = Math.Max(9000, (contentHeight - titleHeight) / Math.Max(cntPerPage, 1));
+        var normalizedCount = PhotoGroup.NormalizeCntPerPage(cntPerPage);
+        var availableRowHeight = Math.Max(1, (contentHeight - titleHeight) / normalizedCount);
+        var rowHeight = normalizedCount <= 4
+            ? Math.Max(9000, availableRowHeight)
+            : availableRowHeight;
         return new HwpxTableLayout(tableWidth, labelWidth, imageWidth, titleHeight, rowHeight);
     }
 

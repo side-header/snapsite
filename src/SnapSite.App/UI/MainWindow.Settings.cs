@@ -677,8 +677,8 @@ public sealed partial class MainWindow
             Content = commonView
         };
         var commonTab = SettingsTopTabButton("공통", selected: true);
-        var page3Tab = SettingsTopTabButton("페이지당 3장", selected: false);
-        var page4Tab = SettingsTopTabButton("페이지당 4장", selected: false);
+        var page3Tab = SettingsTopTabButton("1~3장 기준", selected: false);
+        var page4Tab = SettingsTopTabButton("4~10장 기준", selected: false);
 
         void SelectTab(int page)
         {

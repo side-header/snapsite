@@ -50,6 +50,7 @@ public sealed partial class MainWindow : Window
     private bool isLoading;
     private bool isAutoSaveFeedbackVisible;
     private bool isRule1Selection;
+    private bool isUnclassifiedSelectionActionExpanded;
     private int unclassifiedPhotoScaleLevel;
     private int classifiedPhotoScaleLevel;
     private int autoSaveFeedbackVersion;
@@ -80,6 +81,8 @@ public sealed partial class MainWindow : Window
     private Control? previewFrame;
     private Border? unclassifiedSelectionAction;
     private TextBlock? unclassifiedSelectionActionSummary;
+    private TextBlock? unclassifiedSelectionActionDetails;
+    private TextBlock? unclassifiedSelectionActionToggleIcon;
     private Button? unclassifiedSelectionActionButton;
     private Popup? activePathTreePopup;
     private readonly Dictionary<string, (Border Card, Border Badge, TextBlock BadgeText)> unclassifiedPhotoCardViews = new(StringComparer.OrdinalIgnoreCase);
@@ -1146,6 +1149,8 @@ public sealed partial class MainWindow : Window
         visibleUnclassifiedPhotos.Clear();
         unclassifiedSelectionAction = null;
         unclassifiedSelectionActionSummary = null;
+        unclassifiedSelectionActionDetails = null;
+        unclassifiedSelectionActionToggleIcon = null;
         unclassifiedSelectionActionButton = null;
         centerPanel.Children.Clear();
         centerPanel.RowDefinitions = new RowDefinitions("*");
@@ -1183,8 +1188,54 @@ public sealed partial class MainWindow : Window
         {
             Foreground = Brush("#263238"),
             FontSize = 14,
-            TextWrapping = TextWrapping.Wrap,
+            TextWrapping = TextWrapping.NoWrap,
+            TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center
+        };
+        unclassifiedSelectionActionDetails = new TextBlock
+        {
+            Margin = new Thickness(0, 6, 0, 0),
+            Foreground = Brush("#52606b"),
+            FontSize = 13,
+            TextWrapping = TextWrapping.Wrap,
+            IsVisible = false
+        };
+        unclassifiedSelectionActionToggleIcon = new TextBlock
+        {
+            Text = "▸",
+            Margin = new Thickness(8, 0, 0, 0),
+            FontSize = 14,
+            FontWeight = FontWeight.Bold,
+            Foreground = Brush("#2f80ed"),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+
+        var toggleContent = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,Auto")
+        };
+        AddToGrid(toggleContent, unclassifiedSelectionActionSummary, 0, 0);
+        AddToGrid(toggleContent, unclassifiedSelectionActionToggleIcon, 1, 0);
+        var toggle = new Button
+        {
+            Content = toggleContent,
+            Padding = new Thickness(0),
+            Background = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            VerticalContentAlignment = VerticalAlignment.Center
+        };
+        toggle.Resources["ButtonBackground"] = Brushes.Transparent;
+        toggle.Resources["ButtonBackgroundPointerOver"] = Brushes.Transparent;
+        toggle.Resources["ButtonBackgroundPressed"] = Brushes.Transparent;
+        toggle.Resources["ButtonBorderBrush"] = Brushes.Transparent;
+        toggle.Resources["ButtonBorderBrushPointerOver"] = Brushes.Transparent;
+        toggle.Resources["ButtonBorderBrushPressed"] = Brushes.Transparent;
+        toggle.Click += (_, _) =>
+        {
+            isUnclassifiedSelectionActionExpanded = !isUnclassifiedSelectionActionExpanded;
+            UpdateUnclassifiedSelectionActionExpansion();
         };
 
         var button = new Button
@@ -1194,7 +1245,7 @@ public sealed partial class MainWindow : Window
             Height = 46,
             Margin = new Thickness(20, 0, 0, 0),
             Padding = new Thickness(18, 0),
-            Background = Brush("#079768"),
+            Background = Brush("#2f80ed"),
             Foreground = Brushes.White,
             BorderThickness = new Thickness(0),
             CornerRadius = new CornerRadius(8),
@@ -1203,9 +1254,9 @@ public sealed partial class MainWindow : Window
             HorizontalContentAlignment = HorizontalAlignment.Center,
             VerticalContentAlignment = VerticalAlignment.Center
         };
-        button.Resources["ButtonBackground"] = Brush("#079768");
-        button.Resources["ButtonBackgroundPointerOver"] = Brush("#07865e");
-        button.Resources["ButtonBackgroundPressed"] = Brush("#066f50");
+        button.Resources["ButtonBackground"] = Brush("#2f80ed");
+        button.Resources["ButtonBackgroundPointerOver"] = Brush("#246fd1");
+        button.Resources["ButtonBackgroundPressed"] = Brush("#1d5db3");
         button.Resources["ButtonForeground"] = Brushes.White;
         button.Resources["ButtonForegroundPointerOver"] = Brushes.White;
         button.Resources["ButtonForegroundPressed"] = Brushes.White;
@@ -1214,17 +1265,20 @@ public sealed partial class MainWindow : Window
 
         var content = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("*,Auto")
+            ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+            RowDefinitions = new RowDefinitions("Auto,Auto")
         };
-        AddToGrid(content, unclassifiedSelectionActionSummary, 0, 0);
+        AddToGrid(content, toggle, 0, 0);
+        AddToGrid(content, unclassifiedSelectionActionDetails, 0, 1);
         AddToGrid(content, button, 1, 0);
+        Grid.SetRowSpan(button, 2);
 
         var action = new Border
         {
             IsVisible = false,
             Padding = new Thickness(18, 12),
-            Background = Brush("#ecfff3"),
-            BorderBrush = Brush("#c7ebd4"),
+            Background = Brush("#eaf4ff"),
+            BorderBrush = Brush("#b9d8ff"),
             BorderThickness = new Thickness(0, 1, 0, 0),
             Child = content
         };
@@ -1517,15 +1571,21 @@ public sealed partial class MainWindow : Window
         {
             Height = 54,
             Background = Brushes.White,
-            ColumnDefinitions = new ColumnDefinitions("36,*,Auto,34")
+            ColumnDefinitions = new ColumnDefinitions("36,*,Auto,34"),
+            ClipToBounds = false,
+            ZIndex = 10
         };
+
+        var numberWithInsertControls = GroupNumberWithInsertControls(group, number);
+        numberWithInsertControls.ZIndex = 10;
+        AddToGrid(header, numberWithInsertControls, 0, 0);
 
         var titleBox = GroupTitleTextBox(group);
         AddToGrid(header, HoverOutline(
             titleBox,
             HorizontalAlignment.Left,
-            VerticalAlignment.Top,
-            new Thickness(0, 4, 0, 0),
+            VerticalAlignment.Center,
+            new Thickness(0),
             new Thickness(4, 1)), 1, 0);
 
         Point? rowSelectStart = null;
@@ -1614,8 +1674,10 @@ public sealed partial class MainWindow : Window
         });
         var cntCombo = new ComboBox
         {
-            ItemsSource = new[] { 3, 4 },
-            SelectedItem = group.CntPerPage == 4 ? 4 : 3,
+            ItemsSource = Enumerable.Range(
+                PhotoGroup.MinCntPerPage,
+                PhotoGroup.MaxCntPerPage - PhotoGroup.MinCntPerPage + 1),
+            SelectedItem = PhotoGroup.NormalizeCntPerPage(group.CntPerPage),
             Width = 58,
             Height = 26,
             Padding = new Thickness(6, 0),
@@ -1659,11 +1721,6 @@ public sealed partial class MainWindow : Window
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled
         };
         AddToGrid(layout, photoScroller, 0, 1);
-
-        var numberWithInsertControls = GroupNumberWithInsertControls(group, number);
-        numberWithInsertControls.ZIndex = 10;
-        Grid.SetRowSpan(numberWithInsertControls, 2);
-        AddToGrid(layout, numberWithInsertControls, 0, 0);
 
         root.Child = layout;
         ConfigureGroupReorder(root, group);
@@ -1738,7 +1795,7 @@ public sealed partial class MainWindow : Window
         {
             Width = 28,
             Height = 28,
-            Margin = new Thickness(2, 2, 0, 0),
+            Margin = new Thickness(2, 13, 0, 0),
             Background = Brushes.Transparent,
             BorderBrush = Brushes.Transparent,
             BorderThickness = new Thickness(1),
@@ -1761,7 +1818,7 @@ public sealed partial class MainWindow : Window
         var overlay = new Border
         {
             IsVisible = false,
-            Margin = new Thickness(24, 22, 0, 0),
+            Margin = new Thickness(30, 35, 0, 0),
             Padding = new Thickness(2),
             Background = Brushes.White,
             BorderBrush = Brush("#c8d1da"),
@@ -1775,7 +1832,7 @@ public sealed partial class MainWindow : Window
         var host = new Grid
         {
             Width = 36,
-            Height = 32,
+            Height = 54,
             HorizontalAlignment = HorizontalAlignment.Left,
             VerticalAlignment = VerticalAlignment.Top,
             Children =
@@ -1790,8 +1847,8 @@ public sealed partial class MainWindow : Window
             {
                 overlay.IsVisible = host.IsPointerOver;
                 numberBorder.BorderBrush = host.IsPointerOver ? Brush("#2f80ed") : Brushes.Transparent;
-                host.Width = host.IsPointerOver ? 142 : 36;
-                host.Height = host.IsPointerOver ? 146 : 32;
+                host.Width = host.IsPointerOver ? 146 : 36;
+                host.Height = host.IsPointerOver ? 150 : 54;
             }
         };
         return host;

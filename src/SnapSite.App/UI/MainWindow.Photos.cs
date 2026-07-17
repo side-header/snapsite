@@ -2,6 +2,7 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Layout;
 using Avalonia.Media;
 using Avalonia.Threading;
@@ -349,6 +350,7 @@ public sealed partial class MainWindow
         double fontSize,
         IBrush foreground,
         double width,
+        bool isReadOnly = false,
         Action? onBeginEdit = null,
         Func<KeyModifiers, bool>? onPointerPressed = null)
     {
@@ -362,6 +364,7 @@ public sealed partial class MainWindow
             singleLineLayout: true,
             cancelEdit: box => box.Text = EditableName(relativePath, showFullName: false),
             focusOnAttach: false);
+        input.IsReadOnly = isReadOnly;
         input.BorderThickness = new Thickness(1);
         input.CornerRadius = new CornerRadius(4);
         input.BorderBrush = Brushes.Transparent;
@@ -375,24 +378,29 @@ public sealed partial class MainWindow
 
         if (onPointerPressed is not null)
         {
-            input.Focusable = false;
-            input.PointerPressed += (_, args) =>
-            {
-                if (!args.GetCurrentPoint(input).Properties.IsLeftButtonPressed)
+            input.AddHandler(
+                InputElement.PointerPressedEvent,
+                (_, args) =>
                 {
-                    return;
-                }
-
-                if (!onPointerPressed(args.KeyModifiers))
+                    if (args.GetCurrentPoint(input).Properties.IsLeftButtonPressed && HasSelectionModifier(args.KeyModifiers))
+                    {
+                        onPointerPressed(args.KeyModifiers);
+                        args.Handled = true;
+                    }
+                },
+                RoutingStrategies.Tunnel);
+            input.AddHandler(
+                InputElement.PointerPressedEvent,
+                (_, args) =>
                 {
-                    input.Focusable = true;
-                    input.Focus();
-                    input.CaretIndex = input.Text?.Length ?? 0;
-                }
-
-                args.Handled = true;
-            };
-            input.LostFocus += (_, _) => input.Focusable = false;
+                    if (args.GetCurrentPoint(input).Properties.IsLeftButtonPressed && !HasSelectionModifier(args.KeyModifiers))
+                    {
+                        onPointerPressed(args.KeyModifiers);
+                        args.Handled = true;
+                    }
+                },
+                RoutingStrategies.Bubble,
+                handledEventsToo: true);
         }
         return input;
     }
@@ -428,6 +436,7 @@ public sealed partial class MainWindow
             11,
             assigned ? Brush("#b7b9ba") : Brush("#1f252a"),
             nameWidth,
+            isReadOnly: assigned,
             onPointerPressed: assigned
                 ? null
                 : modifiers =>
@@ -464,7 +473,7 @@ public sealed partial class MainWindow
             Padding = new Thickness(6, 0),
             HorizontalAlignment = HorizontalAlignment.Right,
             VerticalAlignment = VerticalAlignment.Top,
-            Background = Brush("#35a04b"),
+            Background = Brush("#2f80ed"),
             CornerRadius = new CornerRadius(11),
             IsVisible = !assigned && !isRule1Selection && selectedPhotos.Count >= 2 && selectedIndex >= 0,
             Child = selectionBadgeText
@@ -508,7 +517,7 @@ public sealed partial class MainWindow
             }
 
             return SelectedPhotoIndex(relativePath) >= 0
-                ? Brush(isRule1Selection ? "#2f80ed" : "#35a04b")
+                ? Brush("#2f80ed")
                 : Brush("#d8dde2");
         }
 
@@ -519,7 +528,7 @@ public sealed partial class MainWindow
             Margin = new Thickness(5),
             Padding = new Thickness(8),
             Background = isSelected
-                ? Brush(isRule1Selection ? "#eaf4ff" : "#dff2e4")
+                ? Brush("#eaf4ff")
                 : assigned ? Brush("#f8f9fa") : Brushes.White,
             BorderBrush = RestingBorderBrush(),
             BorderThickness = new Thickness(1),
@@ -778,12 +787,12 @@ public sealed partial class MainWindow
             var selectedIndex = SelectedPhotoIndex(relativePath);
             var isSelected = selectedIndex >= 0;
             view.Card.Background = isSelected
-                ? Brush(isRule1Selection ? "#eaf4ff" : "#dff2e4")
+                ? Brush("#eaf4ff")
                 : Brushes.White;
             view.Card.BorderBrush = view.Card.IsPointerOver
                 ? Brush("#2f80ed")
                 : isSelected
-                    ? Brush(isRule1Selection ? "#2f80ed" : "#35a04b")
+                    ? Brush("#2f80ed")
                     : Brush("#d8dde2");
             view.Badge.IsVisible = showOrderBadges && isSelected;
             view.BadgeText.Text = view.Badge.IsVisible ? (selectedIndex + 1).ToString() : string.Empty;
@@ -862,21 +871,54 @@ public sealed partial class MainWindow
     {
         var selectedCount = selectedPhotos.Count;
         action.IsVisible = selectedCount > 0;
+        if (selectedCount == 0)
+        {
+            isUnclassifiedSelectionActionExpanded = false;
+            summary.Text = string.Empty;
+            if (unclassifiedSelectionActionDetails is not null)
+            {
+                unclassifiedSelectionActionDetails.Text = string.Empty;
+            }
+            UpdateUnclassifiedSelectionActionExpansion();
+            return;
+        }
+
         if (isRule1Selection)
         {
             var groupCount = BuildRule1GroupPlans(selectedPhotos, OpenedRootName()).Count;
-            summary.Text = $"사진 {selectedCount}장이 규칙1 기준으로 선택되었습니다. 생성 예정 공종은 {groupCount}개입니다.\n" +
-                           "1전/1중/1후/2전/...처럼 숫자와 전/중/후 문자 조합으로 된 사진 파일만 선택되었습니다.\n" +
-                           "선택된 사진들은 폴더와 번호별로 새로운 공종 페이지에 추가되며, 공종 이름은 '폴더 이름 + 번호구역'으로, 사진은 전/중/후/나머지 영역으로 자동 분류됩니다.";
+            summary.Text = $"사진 {selectedCount}장이 선택되었습니다 (규칙1 기준 선택 적용)";
+            if (unclassifiedSelectionActionDetails is not null)
+            {
+                unclassifiedSelectionActionDetails.Text = $"생성 예정 공종은 {groupCount}개입니다.\n" +
+                    "1전/1중/1후/2전/...처럼 숫자와 전/중/후 문자 조합으로 된 사진 파일만 선택되었습니다.\n" +
+                    "선택된 사진들은 폴더와 번호별로 새로운 공종 페이지에 추가되며, 공종 이름은 '폴더 이름 + 번호구역'으로, 사진은 전/중/후/나머지 영역으로 자동 분류됩니다.";
+            }
             ApplyUnclassifiedSelectionActionPalette(action, "#eaf4ff", "#b9d8ff", "#2f80ed", "#246fd1", "#1d5db3");
+            UpdateUnclassifiedSelectionActionExpansion();
             return;
         }
 
         var suggestedTitle = SuggestedGroupTitle(selectedPhotos, OpenedRootName());
-        summary.Text = string.IsNullOrWhiteSpace(suggestedTitle)
-            ? $"사진 {selectedCount}장이 선택되었습니다.\n선택 순서대로 전/중/후/나머지 영역에 자동 배치됩니다."
-            : $"사진 {selectedCount}장이 선택되었습니다.\n선택 순서대로 전/중/후/나머지 영역에 자동 배치됩니다.\n공종 제목은 첫 번째 선택 사진의 폴더 이름인 \"{suggestedTitle}\"로 자동 입력됩니다.";
-        ApplyUnclassifiedSelectionActionPalette(action, "#ecfff3", "#c7ebd4", "#079768", "#07865e", "#066f50");
+        summary.Text = $"사진 {selectedCount}장이 선택되었습니다";
+        if (unclassifiedSelectionActionDetails is not null)
+        {
+            unclassifiedSelectionActionDetails.Text = string.IsNullOrWhiteSpace(suggestedTitle)
+                ? "선택 순서대로 전/중/후/나머지 영역에 자동 배치됩니다."
+                : $"선택 순서대로 전/중/후/나머지 영역에 자동 배치됩니다.\n공종 제목은 첫 번째 선택 사진의 폴더 이름인 \"{suggestedTitle}\"로 자동 입력됩니다.";
+        }
+        ApplyUnclassifiedSelectionActionPalette(action, "#eaf4ff", "#b9d8ff", "#2f80ed", "#246fd1", "#1d5db3");
+        UpdateUnclassifiedSelectionActionExpansion();
+    }
+
+    private void UpdateUnclassifiedSelectionActionExpansion()
+    {
+        if (unclassifiedSelectionActionDetails is null || unclassifiedSelectionActionToggleIcon is null)
+        {
+            return;
+        }
+
+        unclassifiedSelectionActionDetails.IsVisible = isUnclassifiedSelectionActionExpanded;
+        unclassifiedSelectionActionToggleIcon.Text = isUnclassifiedSelectionActionExpanded ? "▾" : "▸";
     }
 
     private void ApplyUnclassifiedSelectionActionPalette(
@@ -1767,7 +1809,7 @@ public sealed partial class MainWindow
             Background = Brushes.Transparent,
             BorderBrush = Brushes.Transparent,
             BorderThickness = new Thickness(0),
-            SelectionBrush = Brushes.Transparent,
+            SelectionBrush = Brush("#d8ecff"),
             SelectionForegroundBrush = foreground,
             CaretBrush = foreground,
             TextAlignment = textAlignment,
@@ -1796,7 +1838,7 @@ public sealed partial class MainWindow
         box.LostFocus += (_, _) => cancelEdit(box);
         box.KeyDown += (_, args) =>
         {
-            if (args.Key != Key.Enter)
+            if (args.Key != Key.Enter || box.IsReadOnly)
             {
                 return;
             }

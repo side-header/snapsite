@@ -4,6 +4,10 @@ namespace NewGreen.Domain;
 
 public sealed class PhotoGroup
 {
+    public const int MinCntPerPage = 1;
+    public const int MaxCntPerPage = 10;
+    public const int DefaultCntPerPage = 3;
+
     [JsonPropertyName("id")]
     public string Id { get; set; } = string.Empty;
 
@@ -21,7 +25,7 @@ public sealed class PhotoGroup
     public List<PhotoCell> Omit { get; set; } = DefaultOmitCells();
 
     [JsonPropertyName("cntPerPage")]
-    public int CntPerPage { get; set; } = 3;
+    public int CntPerPage { get; set; } = DefaultCntPerPage;
 
     [JsonIgnore]
     public bool IsBlankPage =>
@@ -64,6 +68,11 @@ public sealed class PhotoGroup
     public IEnumerable<PhotoCell> AllCells()
     {
         return Target.Concat(Omit);
+    }
+
+    public static int NormalizeCntPerPage(int count)
+    {
+        return Math.Clamp(count, MinCntPerPage, MaxCntPerPage);
     }
 
     public bool HasAnyPhoto()

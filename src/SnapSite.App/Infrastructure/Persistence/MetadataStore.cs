@@ -101,7 +101,7 @@ public sealed class MetadataStore
 
     private static int NormalizeCntPerPage(int cntPerPage)
     {
-        return cntPerPage == 4 ? 4 : 3;
+        return PhotoGroup.NormalizeCntPerPage(cntPerPage);
     }
 
     private static void SanitizeCells(
