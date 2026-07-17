@@ -56,6 +56,8 @@ public sealed partial class MainWindow : Window
     private int unclassifiedPhotoScaleLevel;
     private int classifiedPhotoScaleLevel;
     private int autoSaveFeedbackVersion;
+    private int pendingAutoSaveVersion;
+    private string pendingAutoSaveMessage = string.Empty;
     private int classifiedPhotoHighlightVersion;
     private readonly HashSet<string> expandedExplorerPaths = [];
     private readonly HashSet<string> expandedUnclassifiedPaths = [];
@@ -75,7 +77,9 @@ public sealed partial class MainWindow : Window
     private readonly Grid centerPanel = new();
     private readonly StackPanel rightPanel = new() { Spacing = 0 };
     private readonly Dictionary<string, Control> classifiedGroupViews = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, TextBlock> classifiedGroupNumberTexts = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Border> classifiedGroupHighlightViews = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ScrollViewer> classifiedGroupPhotoScrollViewers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Border> classifiedPhotoCardViews = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<Border, int> classifiedPhotoHighlightVersions = [];
     private readonly Grid detailPanel = new();
@@ -95,6 +99,7 @@ public sealed partial class MainWindow : Window
     private Control? unclassifiedTreeContent;
     private ScrollViewer? classifiedScrollViewer;
     private readonly Dictionary<string, (Border Card, Border Badge, TextBlock BadgeText)> unclassifiedPhotoCardViews = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, TextBlock> unclassifiedAssignedGroupNumberTexts = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<(string RelativePath, Control Card)> renderedUnclassifiedPhotoCards = [];
     private readonly Dictionary<string, TextBlock> unclassifiedFolderStatusLabels = new(StringComparer.OrdinalIgnoreCase);
 
@@ -108,6 +113,13 @@ public sealed partial class MainWindow : Window
         Background = Brushes.White;
 
         Content = BuildShell();
+        Closing += (_, args) =>
+        {
+            if (!FlushPendingAutoSave())
+            {
+                args.Cancel = true;
+            }
+        };
         Closed += (_, _) => ClearThumbnailCacheOnExit();
         RefreshAll();
     }
@@ -516,8 +528,11 @@ public sealed partial class MainWindow : Window
     {
         var group = state.AddGroup();
         selectedGroupId = group.Id;
-        RefreshAll();
+        AppendClassifiedGroups([group]);
+        RefreshPanelHeaders();
+        RefreshDetail();
         ScheduleRevealCreatedClassifiedGroups([group.Id], alignNearUpperCenter: false);
+        QueueAutoSave("공종 페이지를 추가했습니다");
     }
 
     private void AddPhotoGroupFromSelection()
@@ -545,16 +560,22 @@ public sealed partial class MainWindow : Window
 
         selectedGroupId = group.Id;
         ClearUnclassifiedPhotoSelection();
-        SaveToMetadata("선택한 사진으로 공종을 추가했습니다", refreshAfterSave: false);
-        RefreshAll();
+        AppendClassifiedGroups([group]);
+        RefreshUnclassifiedAssignmentCards(selected);
+        RefreshPanelHeaders();
+        RefreshDetail();
+        ScheduleHighlightClassifiedPhotos(selected);
         ScheduleRevealCreatedClassifiedGroups([group.Id]);
+        QueueAutoSave("선택한 사진으로 공종을 추가했습니다");
     }
 
     private void AddBlankPage()
     {
         var blankPage = state.AddBlankPage();
-        RefreshAll();
+        AppendClassifiedGroups([blankPage]);
+        RefreshPanelHeaders();
         ScheduleRevealCreatedClassifiedGroups([blankPage.Id], alignNearUpperCenter: false);
+        QueueAutoSave("빈 페이지를 추가했습니다");
     }
 
     private void ScrollToClassifiedPage(string groupId)
@@ -783,6 +804,11 @@ public sealed partial class MainWindow : Window
 
         var rootDir = folders.FirstOrDefault()?.TryGetLocalPath();
         if (string.IsNullOrWhiteSpace(rootDir))
+        {
+            return;
+        }
+
+        if (!FlushPendingAutoSave())
         {
             return;
         }
@@ -1278,6 +1304,7 @@ public sealed partial class MainWindow : Window
     private void RefreshCenter()
     {
         unclassifiedPhotoCardViews.Clear();
+        unclassifiedAssignedGroupNumberTexts.Clear();
         renderedUnclassifiedPhotoCards.Clear();
         unclassifiedFolderStatusLabels.Clear();
         visibleUnclassifiedPhotos.Clear();
@@ -1799,10 +1826,259 @@ public sealed partial class MainWindow : Window
             path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
     }
 
+    private ClassifiedGroupRefreshSnapshot CaptureClassifiedGroupRefreshSnapshot(
+        IEnumerable<string> groupIds)
+    {
+        var affectedGroupIds = groupIds
+            .Where(groupId => !string.IsNullOrWhiteSpace(groupId))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var horizontalOffsets = new Dictionary<string, Vector>(StringComparer.OrdinalIgnoreCase);
+        var oldPhotoPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var groupId in affectedGroupIds)
+        {
+            if (classifiedGroupPhotoScrollViewers.TryGetValue(groupId, out var photoScroller))
+            {
+                horizontalOffsets[groupId] = photoScroller.Offset;
+            }
+
+            AddClassifiedGroupPhotoPaths(groupId, oldPhotoPaths);
+        }
+
+        return new ClassifiedGroupRefreshSnapshot(
+            affectedGroupIds,
+            classifiedScrollViewer?.Offset ?? default,
+            horizontalOffsets,
+            oldPhotoPaths);
+    }
+
+    private void RefreshClassifiedGroups(ClassifiedGroupRefreshSnapshot snapshot)
+    {
+        var replacements = new List<(string GroupId, PhotoGroup Group, int Index, Control ExistingView)>();
+        foreach (var groupId in snapshot.GroupIds)
+        {
+            var groupIndex = state.Groups.FindIndex(group => group.Id == groupId);
+            if (groupIndex < 0 ||
+                groupIndex >= rightPanel.Children.Count ||
+                !classifiedGroupViews.TryGetValue(groupId, out var existingView) ||
+                !ReferenceEquals(rightPanel.Children[groupIndex], existingView))
+            {
+                RefreshRight();
+                ScheduleRestoreClassifiedGroupScrollOffsets(snapshot);
+                return;
+            }
+
+            replacements.Add((groupId, state.Groups[groupIndex], groupIndex, existingView));
+        }
+
+        var affectedPhotoPaths = new HashSet<string>(snapshot.OldPhotoPaths, StringComparer.OrdinalIgnoreCase);
+        foreach (var groupId in snapshot.GroupIds)
+        {
+            AddClassifiedGroupPhotoPaths(groupId, affectedPhotoPaths);
+        }
+
+        foreach (var photoPath in affectedPhotoPaths)
+        {
+            if (classifiedPhotoCardViews.Remove(photoPath, out var photoCard))
+            {
+                classifiedPhotoHighlightVersions.Remove(photoCard);
+            }
+        }
+
+        foreach (var replacement in replacements)
+        {
+            classifiedGroupViews.Remove(replacement.GroupId);
+            classifiedGroupNumberTexts.Remove(replacement.GroupId);
+            classifiedGroupHighlightViews.Remove(replacement.GroupId);
+            classifiedGroupPhotoScrollViewers.Remove(replacement.GroupId);
+            rightPanel.Children.RemoveAt(replacement.Index);
+            rightPanel.Children.Insert(
+                replacement.Index,
+                GroupRow(replacement.Group, replacement.Index + 1));
+        }
+
+        ScheduleRestoreClassifiedGroupScrollOffsets(snapshot);
+    }
+
+    private ClassifiedGroupRangeRefreshSnapshot CaptureClassifiedGroupRangeRefreshSnapshot(
+        int startIndex,
+        int endIndex)
+    {
+        startIndex = Math.Clamp(startIndex, 0, state.Groups.Count);
+        endIndex = Math.Clamp(endIndex, startIndex - 1, state.Groups.Count - 1);
+        var groupIds = endIndex < startIndex
+            ? []
+            : state.Groups
+                .Skip(startIndex)
+                .Take(endIndex - startIndex + 1)
+                .Select(group => group.Id)
+                .ToList();
+        var snapshot = CaptureClassifiedGroupRefreshSnapshot(groupIds);
+        return new ClassifiedGroupRangeRefreshSnapshot(
+            startIndex,
+            endIndex,
+            state.Groups.Count,
+            snapshot);
+    }
+
+    private void RefreshClassifiedGroupRange(
+        ClassifiedGroupRangeRefreshSnapshot rangeSnapshot,
+        int newEndIndex)
+    {
+        var startIndex = rangeSnapshot.StartIndex;
+        newEndIndex = Math.Min(newEndIndex, state.Groups.Count - 1);
+        var oldCount = Math.Max(0, rangeSnapshot.EndIndex - startIndex + 1);
+        var expectedOldChildCount = rangeSnapshot.OldGroupCount == 0 ? 1 : rangeSnapshot.OldGroupCount;
+        if (rightPanel.Children.Count != expectedOldChildCount ||
+            startIndex > rangeSnapshot.OldGroupCount ||
+            startIndex > state.Groups.Count)
+        {
+            RefreshRight();
+            ScheduleRestoreClassifiedGroupScrollOffsets(rangeSnapshot.GroupSnapshot);
+            return;
+        }
+
+        var affectedPhotoPaths = new HashSet<string>(
+            rangeSnapshot.GroupSnapshot.OldPhotoPaths,
+            StringComparer.OrdinalIgnoreCase);
+        for (var index = startIndex; index <= newEndIndex; index++)
+        {
+            AddClassifiedGroupPhotoPaths(state.Groups[index].Id, affectedPhotoPaths);
+        }
+
+        foreach (var photoPath in affectedPhotoPaths)
+        {
+            if (classifiedPhotoCardViews.Remove(photoPath, out var photoCard))
+            {
+                classifiedPhotoHighlightVersions.Remove(photoCard);
+            }
+        }
+
+        foreach (var groupId in rangeSnapshot.GroupSnapshot.GroupIds)
+        {
+            classifiedGroupViews.Remove(groupId);
+            classifiedGroupNumberTexts.Remove(groupId);
+            classifiedGroupHighlightViews.Remove(groupId);
+            classifiedGroupPhotoScrollViewers.Remove(groupId);
+        }
+
+        if (rangeSnapshot.OldGroupCount == 0)
+        {
+            rightPanel.Children.Clear();
+        }
+        else
+        {
+            for (var count = 0; count < oldCount; count++)
+            {
+                rightPanel.Children.RemoveAt(startIndex);
+            }
+        }
+
+        for (var index = startIndex; index <= newEndIndex; index++)
+        {
+            rightPanel.Children.Insert(index, GroupRow(state.Groups[index], index + 1));
+        }
+
+        if (state.Groups.Count == 0)
+        {
+            rightPanel.Children.Add(new TextBlock
+            {
+                Text = "아직 공종이 없습니다. ↓ 공종 페이지를 눌러 시작하세요.",
+                Foreground = Brush("#69737d")
+            });
+        }
+
+        ScheduleRestoreClassifiedGroupScrollOffsets(rangeSnapshot.GroupSnapshot);
+    }
+
+    private void AppendClassifiedGroups(IReadOnlyList<PhotoGroup> groups)
+    {
+        if (groups.Count == 0)
+        {
+            return;
+        }
+
+        var startIndex = state.Groups.Count - groups.Count;
+        var expectedOldCount = startIndex == 0 ? 1 : startIndex;
+        if (startIndex < 0 || rightPanel.Children.Count != expectedOldCount)
+        {
+            RefreshRight();
+            return;
+        }
+
+        if (startIndex == 0)
+        {
+            rightPanel.Children.Clear();
+        }
+
+        for (var index = startIndex; index < state.Groups.Count; index++)
+        {
+            rightPanel.Children.Add(GroupRow(state.Groups[index], index + 1));
+        }
+    }
+
+    private void AddClassifiedGroupPhotoPaths(string groupId, ISet<string> destination)
+    {
+        var group = state.GroupById(groupId);
+        if (group is null)
+        {
+            return;
+        }
+
+        foreach (var cell in group.AllCells())
+        {
+            var path = AppState.NormalizePath(cell.Image);
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                destination.Add(path);
+            }
+        }
+    }
+
+    private void ScheduleRestoreClassifiedGroupScrollOffsets(ClassifiedGroupRefreshSnapshot snapshot)
+    {
+        DispatcherTimer.RunOnce(() =>
+        {
+            if (classifiedScrollViewer is { } outerScroller)
+            {
+                outerScroller.Offset = ClampScrollOffset(outerScroller, snapshot.ClassifiedOffset);
+            }
+
+            foreach (var (groupId, offset) in snapshot.HorizontalOffsets)
+            {
+                if (classifiedGroupPhotoScrollViewers.TryGetValue(groupId, out var photoScroller))
+                {
+                    photoScroller.Offset = ClampScrollOffset(photoScroller, offset);
+                }
+            }
+        }, TimeSpan.FromMilliseconds(16), DispatcherPriority.Render);
+    }
+
+    private static Vector ClampScrollOffset(ScrollViewer scrollViewer, Vector offset)
+    {
+        return new Vector(
+            Math.Clamp(offset.X, 0, Math.Max(0, scrollViewer.Extent.Width - scrollViewer.Viewport.Width)),
+            Math.Clamp(offset.Y, 0, Math.Max(0, scrollViewer.Extent.Height - scrollViewer.Viewport.Height)));
+    }
+
+    private sealed record ClassifiedGroupRefreshSnapshot(
+        IReadOnlyList<string> GroupIds,
+        Vector ClassifiedOffset,
+        IReadOnlyDictionary<string, Vector> HorizontalOffsets,
+        IReadOnlySet<string> OldPhotoPaths);
+
+    private sealed record ClassifiedGroupRangeRefreshSnapshot(
+        int StartIndex,
+        int EndIndex,
+        int OldGroupCount,
+        ClassifiedGroupRefreshSnapshot GroupSnapshot);
+
     private void RefreshRight()
     {
         classifiedGroupViews.Clear();
+        classifiedGroupNumberTexts.Clear();
         classifiedGroupHighlightViews.Clear();
+        classifiedGroupPhotoScrollViewers.Clear();
         classifiedPhotoCardViews.Clear();
         classifiedPhotoHighlightVersions.Clear();
         rightPanel.Children.Clear();
@@ -1856,7 +2132,10 @@ public sealed partial class MainWindow : Window
             ZIndex = 10
         };
 
-        var numberWithInsertControls = GroupNumberWithInsertControls(group, number);
+        var numberWithInsertControls = GroupNumberWithInsertControls(
+            group,
+            number,
+            out var hideNumberActionsForDrag);
         numberWithInsertControls.ZIndex = 10;
         AddToGrid(header, numberWithInsertControls, 0, 0);
 
@@ -1933,8 +2212,45 @@ public sealed partial class MainWindow : Window
         remove.Resources["ButtonBorderBrushPressed"] = Brushes.Transparent;
         remove.Click += (_, _) =>
         {
+            var groupIndex = state.Groups.FindIndex(candidate => candidate.Id == group.Id);
+            if (groupIndex < 0)
+            {
+                return;
+            }
+
+            var canRemoveInPlace = CanModifyClassifiedGroupRowsInPlace();
+            var rangeSnapshot = canRemoveInPlace
+                ? null
+                : CaptureClassifiedGroupRangeRefreshSnapshot(groupIndex, state.Groups.Count - 1);
+            var removedPaths = group.AllCells()
+                .Select(cell => AppState.NormalizePath(cell.Image))
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
             state.RemoveGroup(group.Id);
-            RefreshAll();
+            if (selectedGroupId == group.Id)
+            {
+                selectedGroupId = state.Groups.ElementAtOrDefault(
+                    Math.Min(groupIndex, state.Groups.Count - 1))?.Id ?? string.Empty;
+            }
+            if (canRemoveInPlace)
+            {
+                RemoveClassifiedGroupRowInPlace(group.Id, groupIndex, removedPaths);
+                UpdateClassifiedGroupNumbers(groupIndex);
+                UpdateUnclassifiedAssignedGroupNumbers(groupIndex);
+                if (removedPaths.Count > 0)
+                {
+                    RefreshUnclassifiedAssignmentCards(removedPaths);
+                }
+            }
+            else
+            {
+                RefreshClassifiedGroupRange(rangeSnapshot!, state.Groups.Count - 1);
+                RefreshUnclassifiedAssignmentCards(rangeSnapshot!.GroupSnapshot.OldPhotoPaths);
+            }
+            RefreshPanelHeaders();
+            RefreshDetail();
+            QueueAutoSave("공종 페이지를 삭제했습니다");
         };
         AddToGrid(header, remove, 3, 0);
 
@@ -1982,9 +2298,14 @@ public sealed partial class MainWindow : Window
         {
             if (cntCombo.SelectedItem is int count && group.CntPerPage != count)
             {
+                var refreshSnapshot = CaptureClassifiedGroupRefreshSnapshot([group.Id]);
                 group.CntPerPage = count;
-                SaveToMetadata("페이지당 사진 수를 저장했습니다", refreshAfterSave: false);
-                RefreshAll();
+                RefreshClassifiedGroups(refreshSnapshot);
+                if (selectedGroupId == group.Id)
+                {
+                    RefreshDetail();
+                }
+                QueueAutoSave("페이지당 사진 수를 저장했습니다");
             }
         };
         cntPerPage.Children.Add(cntCombo);
@@ -2000,6 +2321,7 @@ public sealed partial class MainWindow : Window
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled
         };
+        classifiedGroupPhotoScrollViewers[group.Id] = photoScroller;
         AddToGrid(layout, photoScroller, 0, 1);
 
         root.Child = layout;
@@ -2022,7 +2344,7 @@ public sealed partial class MainWindow : Window
         };
         classifiedGroupViews[group.Id] = container;
         classifiedGroupHighlightViews[group.Id] = highlight;
-        ConfigureGroupReorder(root, group);
+        ConfigureGroupReorder(root, group, onDragStarted: hideNumberActionsForDrag);
         return container;
     }
 
@@ -2072,14 +2394,17 @@ public sealed partial class MainWindow : Window
             input.Text = group.Title;
             if (changed)
             {
-                SaveToMetadata("구역 이름을 저장했습니다", refreshAfterSave: false);
+                QueueAutoSave("구역 이름을 저장했습니다");
             }
             args.Handled = true;
         };
         return input;
     }
 
-    private Control GroupNumberWithInsertControls(PhotoGroup group, int number)
+    private Control GroupNumberWithInsertControls(
+        PhotoGroup group,
+        int number,
+        out Action hideForDrag)
     {
         var numberText = new TextBlock
         {
@@ -2091,6 +2416,7 @@ public sealed partial class MainWindow : Window
             VerticalAlignment = VerticalAlignment.Center,
             HorizontalAlignment = HorizontalAlignment.Center
         };
+        classifiedGroupNumberTexts[group.Id] = numberText;
         var numberBorder = new Border
         {
             Width = 28,
@@ -2145,7 +2471,7 @@ public sealed partial class MainWindow : Window
         var overlay = new Border
         {
             IsVisible = false,
-            Margin = new Thickness(30, 35, 0, 0),
+            Margin = new Thickness(27, 32, 0, 0),
             Padding = new Thickness(2),
             Background = Brushes.White,
             BorderBrush = Brush("#c8d1da"),
@@ -2168,14 +2494,32 @@ public sealed partial class MainWindow : Window
                 overlay
             }
         };
+        var suppressUntilPointerExit = false;
+        void ApplyHoverState(bool show)
+        {
+            overlay.IsVisible = show;
+            numberBorder.BorderBrush = show ? Brush("#2f80ed") : Brushes.Transparent;
+            host.Width = show ? 146 : 36;
+            host.Height = show ? 150 : 54;
+        }
+
+        hideForDrag = () =>
+        {
+            suppressUntilPointerExit = true;
+            ApplyHoverState(show: false);
+        };
         host.PropertyChanged += (_, args) =>
         {
             if (args.Property == InputElement.IsPointerOverProperty)
             {
-                overlay.IsVisible = host.IsPointerOver;
-                numberBorder.BorderBrush = host.IsPointerOver ? Brush("#2f80ed") : Brushes.Transparent;
-                host.Width = host.IsPointerOver ? 146 : 36;
-                host.Height = host.IsPointerOver ? 150 : 54;
+                if (!host.IsPointerOver)
+                {
+                    suppressUntilPointerExit = false;
+                    ApplyHoverState(show: false);
+                    return;
+                }
+
+                ApplyHoverState(show: !suppressUntilPointerExit);
             }
         };
         return host;
@@ -2199,20 +2543,132 @@ public sealed partial class MainWindow : Window
         }
 
         var insertIndex = groupIndex + (after ? 1 : 0);
+        var canInsertInPlace = CanModifyClassifiedGroupRowsInPlace();
+        var rangeSnapshot = canInsertInPlace
+            ? null
+            : CaptureClassifiedGroupRangeRefreshSnapshot(insertIndex, state.Groups.Count - 1);
+        var oldGroupCount = state.Groups.Count;
+        PhotoGroup insertedPage;
         if (blankPage)
         {
-            state.InsertBlankPage(insertIndex);
+            insertedPage = state.InsertBlankPage(insertIndex);
         }
         else
         {
-            var insertedGroup = state.InsertGroup(insertIndex);
-            selectedGroupId = insertedGroup.Id;
+            insertedPage = state.InsertGroup(insertIndex);
+            selectedGroupId = insertedPage.Id;
         }
 
         var pageKind = blankPage ? "빈 페이지" : "공종 페이지";
         var direction = after ? "아래" : "위";
-        SaveToMetadata($"{pageKind}를 바로 {direction}에 추가했습니다", refreshAfterSave: false);
-        RefreshAll();
+        if (canInsertInPlace)
+        {
+            InsertClassifiedGroupRowInPlace(insertedPage, insertIndex, oldGroupCount);
+            UpdateUnclassifiedAssignedGroupNumbers(insertIndex + 1);
+        }
+        else
+        {
+            RefreshClassifiedGroupRange(rangeSnapshot!, state.Groups.Count - 1);
+            RefreshUnclassifiedAssignmentCards(rangeSnapshot!.GroupSnapshot.OldPhotoPaths);
+        }
+        RefreshPanelHeaders();
+        RefreshDetail();
+        ScheduleRevealCreatedClassifiedGroups([insertedPage.Id], alignNearUpperCenter: false);
+        QueueAutoSave($"{pageKind}를 바로 {direction}에 추가했습니다");
+    }
+
+    private bool CanModifyClassifiedGroupRowsInPlace()
+    {
+        if (state.Groups.Count == 0)
+        {
+            return rightPanel.Children.Count == 1;
+        }
+
+        if (rightPanel.Children.Count != state.Groups.Count)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < state.Groups.Count; index++)
+        {
+            var group = state.Groups[index];
+            if (!classifiedGroupViews.TryGetValue(group.Id, out var view) ||
+                !ReferenceEquals(rightPanel.Children[index], view) ||
+                !classifiedGroupNumberTexts.ContainsKey(group.Id))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private void InsertClassifiedGroupRowInPlace(PhotoGroup insertedPage, int insertIndex, int oldGroupCount)
+    {
+        if (oldGroupCount == 0)
+        {
+            rightPanel.Children.Clear();
+        }
+
+        rightPanel.Children.Insert(insertIndex, GroupRow(insertedPage, insertIndex + 1));
+        UpdateClassifiedGroupNumbers(insertIndex + 1);
+    }
+
+    private void RemoveClassifiedGroupRowInPlace(
+        string groupId,
+        int groupIndex,
+        IReadOnlyList<string> removedPhotoPaths)
+    {
+        foreach (var photoPath in removedPhotoPaths)
+        {
+            if (classifiedPhotoCardViews.Remove(photoPath, out var photoCard))
+            {
+                classifiedPhotoHighlightVersions.Remove(photoCard);
+            }
+        }
+
+        classifiedGroupViews.Remove(groupId);
+        classifiedGroupNumberTexts.Remove(groupId);
+        classifiedGroupHighlightViews.Remove(groupId);
+        classifiedGroupPhotoScrollViewers.Remove(groupId);
+        rightPanel.Children.RemoveAt(groupIndex);
+        if (state.Groups.Count == 0)
+        {
+            rightPanel.Children.Add(new TextBlock
+            {
+                Text = "아직 공종이 없습니다. ↓ 공종 페이지를 눌러 시작하세요.",
+                Foreground = Brush("#69737d")
+            });
+        }
+    }
+
+    private void UpdateClassifiedGroupNumbers(int startIndex)
+    {
+        for (var index = Math.Max(0, startIndex); index < state.Groups.Count; index++)
+        {
+            var group = state.Groups[index];
+            if (classifiedGroupNumberTexts.TryGetValue(group.Id, out var numberText))
+            {
+                numberText.Text = (index + 1).ToString();
+            }
+        }
+    }
+
+    private void UpdateUnclassifiedAssignedGroupNumbers(int startIndex)
+    {
+        for (var index = Math.Max(0, startIndex); index < state.Groups.Count; index++)
+        {
+            var groupNumber = (index + 1).ToString();
+            foreach (var cell in state.Groups[index].AllCells())
+            {
+                var relativePath = AppState.NormalizePath(cell.Image);
+                if (!string.IsNullOrWhiteSpace(relativePath) &&
+                    unclassifiedAssignedGroupNumberTexts.TryGetValue(relativePath, out var numberText))
+                {
+                    numberText.Text = groupNumber;
+                }
+            }
+        }
     }
 
     private void MoveGroup(string groupId, int delta)
@@ -2225,9 +2681,15 @@ public sealed partial class MainWindow : Window
         }
 
         var group = state.Groups[index];
+        var rangeSnapshot = CaptureClassifiedGroupRangeRefreshSnapshot(
+            Math.Min(index, next),
+            Math.Max(index, next));
         state.Groups.RemoveAt(index);
         state.Groups.Insert(next, group);
-        RefreshAll();
+        RefreshClassifiedGroupRange(rangeSnapshot, Math.Max(index, next));
+        RefreshUnclassifiedAssignmentCards(rangeSnapshot.GroupSnapshot.OldPhotoPaths);
+        RefreshDetail();
+        QueueAutoSave("구역 순서를 저장했습니다");
     }
 
     private void MoveGroupTo(string sourceGroupId, string targetGroupId)
@@ -2244,6 +2706,9 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        var rangeStart = Math.Min(sourceIndex, targetIndex);
+        var rangeEnd = Math.Max(sourceIndex, targetIndex);
+        var rangeSnapshot = CaptureClassifiedGroupRangeRefreshSnapshot(rangeStart, rangeEnd);
         var group = state.Groups[sourceIndex];
         state.Groups.RemoveAt(sourceIndex);
         state.Groups.Insert(targetIndex, group);
@@ -2251,8 +2716,10 @@ public sealed partial class MainWindow : Window
         {
             selectedGroupId = sourceGroupId;
         }
-        SaveToMetadata("구역 순서를 저장했습니다", refreshAfterSave: false);
-        RefreshAll();
+        RefreshClassifiedGroupRange(rangeSnapshot, rangeEnd);
+        RefreshUnclassifiedAssignmentCards(rangeSnapshot.GroupSnapshot.OldPhotoPaths);
+        RefreshDetail();
+        QueueAutoSave("구역 순서를 저장했습니다");
     }
 
     private Control PhotoCellBox(PhotoGroup group, bool omit)
@@ -2662,7 +3129,48 @@ public sealed partial class MainWindow : Window
 
     private void Save()
     {
+        CancelPendingAutoSave();
         _ = SaveToMetadata("저장했습니다", refreshAfterSave: true);
+    }
+
+    private void QueueAutoSave(string successMessage)
+    {
+        if (string.IsNullOrWhiteSpace(state.RootDir))
+        {
+            return;
+        }
+
+        pendingAutoSaveMessage = successMessage;
+        var version = ++pendingAutoSaveVersion;
+        DispatcherTimer.RunOnce(() =>
+        {
+            if (version != pendingAutoSaveVersion || string.IsNullOrWhiteSpace(pendingAutoSaveMessage))
+            {
+                return;
+            }
+
+            var message = pendingAutoSaveMessage;
+            pendingAutoSaveMessage = string.Empty;
+            _ = SaveToMetadata(message, refreshAfterSave: false);
+        }, TimeSpan.FromMilliseconds(200), DispatcherPriority.Background);
+    }
+
+    private void CancelPendingAutoSave()
+    {
+        pendingAutoSaveVersion++;
+        pendingAutoSaveMessage = string.Empty;
+    }
+
+    private bool FlushPendingAutoSave()
+    {
+        if (string.IsNullOrWhiteSpace(pendingAutoSaveMessage))
+        {
+            return true;
+        }
+
+        var message = pendingAutoSaveMessage;
+        CancelPendingAutoSave();
+        return SaveToMetadata(message, refreshAfterSave: false);
     }
 
     private bool SaveToMetadata(string successMessage, bool refreshAfterSave)

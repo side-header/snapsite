@@ -579,6 +579,7 @@ public sealed partial class MainWindow
                 }
                 state.ExportSettings.Normalize();
 
+                CancelPendingAutoSave();
                 if (SaveToMetadata("설정을 저장했습니다", refreshAfterSave: false))
                 {
                     dialog.Close();
