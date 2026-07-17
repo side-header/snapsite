@@ -1,5 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Documents;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
@@ -24,6 +25,7 @@ public sealed partial class MainWindow : Window
     private const string ProgramName = AppInfo.Name;
     private const string ProgramVersion = AppInfo.Version;
     private const string GroupDragPrefix = "new-green-group:";
+    private const string MultiPhotoDragPrefix = "new-green-photos:";
     private const string UnclassifiedRootKey = "__newgreen_unclassified_root__";
     private const double SettingsPreviewPaperWidth = 420;
     private const double SettingsPreviewPaperHeight = 594;
@@ -35,7 +37,9 @@ public sealed partial class MainWindow : Window
 
     private AppState state = new();
     private ScanResult scanResult = new();
-    private string selectedPhoto = string.Empty;
+    private readonly List<string> selectedPhotos = [];
+    private readonly List<string> visibleUnclassifiedPhotos = [];
+    private string unclassifiedSelectionAnchor = string.Empty;
     private string selectedGroupId = string.Empty;
     private string pendingDragPhoto = string.Empty;
     private string pendingDragGroupId = string.Empty;
@@ -45,13 +49,19 @@ public sealed partial class MainWindow : Window
     private bool isPreviewVisible;
     private bool isLoading;
     private bool isAutoSaveFeedbackVisible;
+    private bool isRule1Selection;
     private int unclassifiedPhotoScaleLevel;
     private int classifiedPhotoScaleLevel;
     private int autoSaveFeedbackVersion;
     private readonly HashSet<string> expandedExplorerPaths = [];
     private readonly HashSet<string> expandedUnclassifiedPaths = [];
 
-    private readonly TextBlock status = new() { Text = "기준 폴더를 선택하세요.", VerticalAlignment = VerticalAlignment.Center };
+    private readonly TextBlock status = new()
+    {
+        Text = "기준 폴더를 선택하세요.",
+        Foreground = Brushes.Black,
+        VerticalAlignment = VerticalAlignment.Center
+    };
     private readonly TextBlock loadingMessage = new() { Text = "로딩 중...", FontSize = 18, FontWeight = FontWeight.Bold, Foreground = Brushes.Black, HorizontalAlignment = HorizontalAlignment.Center };
     private readonly ProgressBar loadingProgress = new() { Width = 360, Height = 10, Minimum = 0, Maximum = 1, IsIndeterminate = true };
     private readonly Border loadingOverlay = new() { IsVisible = false };
@@ -68,7 +78,12 @@ public sealed partial class MainWindow : Window
     private Control? classifiedHeaderActions;
     private Control? previewSplitter;
     private Control? previewFrame;
+    private Border? unclassifiedSelectionAction;
+    private TextBlock? unclassifiedSelectionActionSummary;
+    private Button? unclassifiedSelectionActionButton;
     private Popup? activePathTreePopup;
+    private readonly Dictionary<string, (Border Card, Border Badge, TextBlock BadgeText)> unclassifiedPhotoCardViews = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, TextBlock> unclassifiedFolderStatusLabels = new(StringComparer.OrdinalIgnoreCase);
 
     public MainWindow()
     {
@@ -96,6 +111,7 @@ public sealed partial class MainWindow : Window
         var bottom = new Border
         {
             Padding = new Thickness(10, 6),
+            Background = Brushes.White,
             BorderBrush = Brush("#d0d6dc"),
             BorderThickness = new Thickness(0, 1, 0, 0),
             Child = status
@@ -461,7 +477,12 @@ public sealed partial class MainWindow : Window
 
         if (isClassified)
         {
-            panel.Children.Add(HeaderActionButton("공종 추가", AddPhotoGroup));
+            panel.Children.Add(HeaderActionButton("빈 페이지 추가", AddBlankPage));
+            panel.Children.Add(HeaderActionButton("공종 페이지 추가", AddPhotoGroup));
+        }
+        else
+        {
+            panel.Children.Add(HeaderActionButton("규칙1 기준 선택", SelectPhotosByRule1));
         }
         panel.Children.Add(HeaderZoomButton("⌕−", isClassified, -1));
         panel.Children.Add(HeaderZoomButton("⌕+", isClassified, 1));
@@ -484,9 +505,44 @@ public sealed partial class MainWindow : Window
         RefreshAll();
     }
 
+    private void AddPhotoGroupFromSelection()
+    {
+        if (isRule1Selection)
+        {
+            AddPhotoGroupsFromRule1Selection();
+            return;
+        }
+
+        var selected = selectedPhotos.ToList();
+        if (selected.Count == 0)
+        {
+            return;
+        }
+
+        var group = state.AddGroup();
+        group.Title = SuggestedGroupTitle(selected, OpenedRootName());
+        var assignedCount = state.PlacePhotosBesideCell(group.Id, omit: false, cellIndex: 0, selected);
+        if (assignedCount == 0)
+        {
+            state.RemoveGroup(group.Id);
+            return;
+        }
+
+        selectedGroupId = group.Id;
+        ClearUnclassifiedPhotoSelection();
+        SaveToMetadata("선택한 사진으로 공종을 추가했습니다", refreshAfterSave: false);
+        RefreshAll();
+    }
+
+    private void AddBlankPage()
+    {
+        state.AddBlankPage();
+        RefreshAll();
+    }
+
     private void SelectGroupForPreview(string groupId)
     {
-        if (string.IsNullOrWhiteSpace(groupId) || state.GroupById(groupId) is null)
+        if (string.IsNullOrWhiteSpace(groupId) || state.GroupById(groupId) is not { IsBlankPage: false })
         {
             return;
         }
@@ -498,7 +554,8 @@ public sealed partial class MainWindow : Window
     private static Button HeaderActionButton(string text, Action action)
     {
         var button = HeaderToolButton(text, enabled: true);
-        button.Width = 78;
+        button.Width = double.NaN;
+        button.Padding = new Thickness(12, 0);
         button.Click += (_, _) => action();
         return button;
     }
@@ -612,7 +669,7 @@ public sealed partial class MainWindow : Window
             expandedUnclassifiedPaths.Clear();
             expandedExplorerPaths.Add(UnclassifiedRootKey);
             expandedUnclassifiedPaths.Add(UnclassifiedRootKey);
-            selectedPhoto = string.Empty;
+            ClearUnclassifiedPhotoSelection();
             selectedGroupId = state.Groups.FirstOrDefault()?.Id ?? string.Empty;
             await PreloadThumbnailsAsync(rootDir, scanResult.Photos);
             status.Text = $"{scanResult.Photos.Count}장의 사진을 불러왔습니다.";
@@ -692,6 +749,8 @@ public sealed partial class MainWindow : Window
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var assigned = state.AssignedSet();
         var classifiedCount = assigned.Count(path => photos.Contains(AppState.NormalizePath(path)));
+        var groupCount = state.Groups.Count(group => !group.IsBlankPage);
+        var blankPageCount = state.Groups.Count(group => group.IsBlankPage);
 
         explorerHeader.Text = string.IsNullOrWhiteSpace(state.RootDir)
             ? "탐색기 영역"
@@ -701,7 +760,7 @@ public sealed partial class MainWindow : Window
             : $"분류되지 않은 영역 : 사진 {photoCount}개";
         classifiedHeader.Text = string.IsNullOrWhiteSpace(state.RootDir)
             ? "분류된 영역"
-            : $"분류된 영역 : 공종 {state.Groups.Count}개 / 사진 {classifiedCount}개";
+            : $"분류된 영역 : 공종 {groupCount}개 / 사진 {classifiedCount}개 / 빈 페이지 {blankPageCount}개";
         var hasRoot = !string.IsNullOrWhiteSpace(state.RootDir);
         if (unclassifiedHeaderActions is not null)
         {
@@ -1060,6 +1119,19 @@ public sealed partial class MainWindow : Window
             .Split('/', StringSplitOptions.RemoveEmptyEntries);
     }
 
+    private static string SuggestedGroupTitle(IReadOnlyList<string> selected, string openedRootName)
+    {
+        if (selected.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var parts = SplitRelativePath(selected[0]);
+        return parts.Length >= 2
+            ? parts[^2]
+            : openedRootName.Trim();
+    }
+
     private static string ExplorerKey(string parentKey, string name)
     {
         return string.IsNullOrWhiteSpace(parentKey)
@@ -1069,15 +1141,23 @@ public sealed partial class MainWindow : Window
 
     private void RefreshCenter()
     {
+        unclassifiedPhotoCardViews.Clear();
+        unclassifiedFolderStatusLabels.Clear();
+        visibleUnclassifiedPhotos.Clear();
+        unclassifiedSelectionAction = null;
+        unclassifiedSelectionActionSummary = null;
+        unclassifiedSelectionActionButton = null;
         centerPanel.Children.Clear();
         centerPanel.RowDefinitions = new RowDefinitions("*");
         if (string.IsNullOrWhiteSpace(state.RootDir))
         {
+            ReconcileVisibleUnclassifiedSelection();
             return;
         }
 
         var photoSection = new DockPanel();
         ConfigureUnclassifiedDropTarget(photoSection);
+        ConfigureUnclassifiedSelectionDismissTarget(photoSection);
         DockPanel.SetDock(photoSection, Dock.Top);
         var photoHeader = new StackPanel { Margin = new Thickness(10, 8, 10, 4), Spacing = 2 };
         if (scanResult.Photos.Count > 0)
@@ -1086,9 +1166,70 @@ public sealed partial class MainWindow : Window
             DockPanel.SetDock(photoHeader, Dock.Top);
             photoSection.Children.Add(photoHeader);
         }
-        photoSection.Children.Add(new ScrollViewer { Content = BuildUnclassifiedTree() });
+        unclassifiedSelectionAction = BuildUnclassifiedSelectionAction();
+        DockPanel.SetDock(unclassifiedSelectionAction, Dock.Bottom);
+        photoSection.Children.Add(unclassifiedSelectionAction);
+        var unclassifiedTree = BuildUnclassifiedTree();
+        ReconcileVisibleUnclassifiedSelection();
+        UpdateUnclassifiedPhotoSelectionVisuals();
+        photoSection.Children.Add(new ScrollViewer { Content = unclassifiedTree });
 
         AddToGrid(centerPanel, photoSection, 0, 0);
+    }
+
+    private Border BuildUnclassifiedSelectionAction()
+    {
+        unclassifiedSelectionActionSummary = new TextBlock
+        {
+            Foreground = Brush("#263238"),
+            FontSize = 14,
+            TextWrapping = TextWrapping.Wrap,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+
+        var button = new Button
+        {
+            Content = "선택된 사진으로 공종 추가하기",
+            MinWidth = 260,
+            Height = 46,
+            Margin = new Thickness(20, 0, 0, 0),
+            Padding = new Thickness(18, 0),
+            Background = Brush("#079768"),
+            Foreground = Brushes.White,
+            BorderThickness = new Thickness(0),
+            CornerRadius = new CornerRadius(8),
+            FontSize = 16,
+            FontWeight = FontWeight.Bold,
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            VerticalContentAlignment = VerticalAlignment.Center
+        };
+        button.Resources["ButtonBackground"] = Brush("#079768");
+        button.Resources["ButtonBackgroundPointerOver"] = Brush("#07865e");
+        button.Resources["ButtonBackgroundPressed"] = Brush("#066f50");
+        button.Resources["ButtonForeground"] = Brushes.White;
+        button.Resources["ButtonForegroundPointerOver"] = Brushes.White;
+        button.Resources["ButtonForegroundPressed"] = Brushes.White;
+        button.Click += (_, _) => AddPhotoGroupFromSelection();
+        unclassifiedSelectionActionButton = button;
+
+        var content = new Grid
+        {
+            ColumnDefinitions = new ColumnDefinitions("*,Auto")
+        };
+        AddToGrid(content, unclassifiedSelectionActionSummary, 0, 0);
+        AddToGrid(content, button, 1, 0);
+
+        var action = new Border
+        {
+            IsVisible = false,
+            Padding = new Thickness(18, 12),
+            Background = Brush("#ecfff3"),
+            BorderBrush = Brush("#c7ebd4"),
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            Child = content
+        };
+        UpdateUnclassifiedSelectionAction(action, unclassifiedSelectionActionSummary);
+        return action;
     }
 
     private Control BuildUnclassifiedTree()
@@ -1102,7 +1243,7 @@ public sealed partial class MainWindow : Window
 
         var tree = new StackPanel
         {
-            Spacing = 8,
+            Spacing = 0,
             Margin = new Thickness(8)
         };
         ConfigureUnclassifiedDropTarget(tree);
@@ -1138,9 +1279,12 @@ public sealed partial class MainWindow : Window
         var assigned = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         for (var i = 0; i < state.Groups.Count; i++)
         {
-            foreach (var path in state.Groups[i].Before.Concat(state.Groups[i].Processing).Concat(state.Groups[i].After))
+            foreach (var cell in state.Groups[i].AllCells())
             {
-                assigned[AppState.NormalizePath(path)] = i + 1;
+                if (!string.IsNullOrWhiteSpace(cell.Image))
+                {
+                    assigned[AppState.NormalizePath(cell.Image)] = i + 1;
+                }
             }
         }
 
@@ -1151,7 +1295,12 @@ public sealed partial class MainWindow : Window
     {
         if (!node.IsDirectory)
         {
-            AddUnclassifiedPhotoWrap(tree, [node], depth, assignedGroupNumbers);
+            AddUnclassifiedPhotoWrap(
+                tree,
+                [node],
+                depth,
+                assignedGroupNumbers,
+                SuggestedGroupTitle([node.Key], OpenedRootName()));
             return;
         }
 
@@ -1170,20 +1319,47 @@ public sealed partial class MainWindow : Window
                 continue;
             }
 
-            AddUnclassifiedPhotoWrap(tree, pendingPhotos, depth + 1, assignedGroupNumbers);
+            AddUnclassifiedPhotoWrap(tree, pendingPhotos, depth + 1, assignedGroupNumbers, node.Name);
             pendingPhotos.Clear();
             AddUnclassifiedRows(tree, child, depth + 1, assignedGroupNumbers);
         }
 
-        AddUnclassifiedPhotoWrap(tree, pendingPhotos, depth + 1, assignedGroupNumbers);
+        AddUnclassifiedPhotoWrap(tree, pendingPhotos, depth + 1, assignedGroupNumbers, node.Name);
     }
 
-    private void AddUnclassifiedPhotoWrap(StackPanel tree, List<ExplorerNode> photos, int depth, IReadOnlyDictionary<string, int> assignedGroupNumbers)
+    private void AddUnclassifiedPhotoWrap(
+        StackPanel tree,
+        List<ExplorerNode> photos,
+        int depth,
+        IReadOnlyDictionary<string, int> assignedGroupNumbers,
+        string ownerFolderName)
     {
         if (photos.Count == 0)
         {
             return;
         }
+
+        var ownerLabel = new TextBlock
+        {
+            Margin = new Thickness(0, 2, 5, 0),
+            FontSize = 13,
+            Foreground = Brush("#263238"),
+            HorizontalAlignment = HorizontalAlignment.Right,
+            TextAlignment = TextAlignment.Right
+        };
+        ownerLabel.Inlines!.Add(new Run
+        {
+            Text = ownerFolderName,
+            Foreground = Brush("#263238"),
+            FontWeight = FontWeight.Normal
+        });
+        ownerLabel.Inlines.Add(new Run
+        {
+            Text = $" 폴더의 사진 총 {photos.Count}개",
+            Foreground = Brush("#7d8790"),
+            FontWeight = FontWeight.Normal
+        });
+        tree.Children.Add(ownerLabel);
 
         var wrap = new WrapPanel
         {
@@ -1203,6 +1379,15 @@ public sealed partial class MainWindow : Window
     private Control UnclassifiedFolderRow(ExplorerNode node, int depth)
     {
         var isExpanded = expandedUnclassifiedPaths.Contains(node.Key);
+        var folderStatus = new TextBlock
+        {
+            IsVisible = false,
+            Margin = new Thickness(6, 0, 0, 0),
+            FontSize = 12,
+            Foreground = Brush("#7d8790"),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        unclassifiedFolderStatusLabels[node.Key] = folderStatus;
         var row = new Border
         {
             Height = 34,
@@ -1210,34 +1395,32 @@ public sealed partial class MainWindow : Window
             Background = Brush("#f7f9fa")
         };
 
-        var content = new StackPanel
+        var content = new Grid
         {
-            Orientation = Orientation.Horizontal,
-            Spacing = 4,
-            VerticalAlignment = VerticalAlignment.Center,
-            Children =
-            {
-                new TextBlock
-                {
-                    Text = isExpanded ? "▾" : "▸",
-                    Width = 18,
-                    FontSize = 13,
-                    FontWeight = FontWeight.Bold,
-                    Foreground = Brush("#3f464d"),
-                    TextAlignment = TextAlignment.Center,
-                    VerticalAlignment = VerticalAlignment.Center
-                },
-                FolderGlyph(),
-                new TextBlock
-                {
-                    Text = node.Name,
-                    FontSize = 14,
-                    Foreground = Brush("#202428"),
-                    VerticalAlignment = VerticalAlignment.Center,
-                    TextTrimming = TextTrimming.CharacterEllipsis
-                }
-            }
+            ColumnDefinitions = new ColumnDefinitions("18,Auto,*,Auto"),
+            VerticalAlignment = VerticalAlignment.Center
         };
+        AddToGrid(content, new TextBlock
+        {
+            Text = isExpanded ? "▾" : "▸",
+            Width = 18,
+            FontSize = 13,
+            FontWeight = FontWeight.Bold,
+            Foreground = Brush("#3f464d"),
+            TextAlignment = TextAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        }, 0, 0);
+        AddToGrid(content, FolderGlyph(), 1, 0);
+        AddToGrid(content, new TextBlock
+        {
+            Text = node.Name,
+            Margin = new Thickness(4, 0, 0, 0),
+            FontSize = 14,
+            Foreground = Brush("#202428"),
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        }, 2, 0);
+        AddToGrid(content, folderStatus, 3, 0);
 
         row.Child = content;
         row.PointerPressed += (_, args) =>
@@ -1247,6 +1430,8 @@ public sealed partial class MainWindow : Window
                 return;
             }
 
+            ClearUnclassifiedPhotoSelection();
+            UpdateUnclassifiedPhotoSelectionVisuals();
             ToggleUnclassifiedFolder(node.Key);
             args.Handled = true;
         };
@@ -1301,7 +1486,7 @@ public sealed partial class MainWindow : Window
         {
             rightPanel.Children.Add(new TextBlock
             {
-                Text = "아직 공종이 없습니다. 공종 추가를 눌러 시작하세요.",
+                Text = "아직 공종이 없습니다. 공종 페이지 추가를 눌러 시작하세요.",
                 Foreground = Brush("#69737d")
             });
             return;
@@ -1324,98 +1509,24 @@ public sealed partial class MainWindow : Window
             Margin = new Thickness(0)
         };
 
-        var stack = new StackPanel { Spacing = 0 };
+        var layout = new Grid
+        {
+            RowDefinitions = new RowDefinitions("54,Auto")
+        };
         var header = new Grid
         {
             Height = 54,
             Background = Brushes.White,
-            ColumnDefinitions = new ColumnDefinitions("52,*,Auto,34")
+            ColumnDefinitions = new ColumnDefinitions("36,*,Auto,34")
         };
 
-        AddToGrid(header, new TextBlock
-        {
-            Text = number.ToString(),
-            FontSize = 16,
-            FontWeight = FontWeight.Bold,
-            Foreground = Brush("#161a1d"),
-            VerticalAlignment = VerticalAlignment.Center,
-            HorizontalAlignment = HorizontalAlignment.Left
-        }, 0, 0);
-
-        var titleHost = new ContentControl();
-        void CommitTitle(TextBox titleBox)
-        {
-            if (!ReferenceEquals(titleHost.Content, titleBox))
-            {
-                return;
-            }
-
-            var nextTitle = titleBox.Text?.Trim() ?? string.Empty;
-            var changed = !string.Equals(group.Title, nextTitle, StringComparison.Ordinal);
-            group.Title = nextTitle;
-            if (changed)
-            {
-                SaveToMetadata("구역 이름을 저장했습니다", refreshAfterSave: false);
-            }
-            titleHost.Content = CreateGroupTitleDisplay(group, BeginTitleEdit);
-        }
-
-        void BeginTitleEdit()
-        {
-            SelectGroupForPreview(group.Id);
-            var titleBox = new TextBox
-            {
-                Text = group.Title,
-                Background = Brushes.Transparent,
-                BorderBrush = Brushes.Transparent,
-                BorderThickness = new Thickness(0),
-                SelectionBrush = Brushes.Transparent,
-                SelectionForegroundBrush = Brush("#1f252a"),
-                CaretBrush = Brush("#1f252a"),
-                FontSize = 13,
-                Foreground = Brush("#1f252a"),
-                VerticalAlignment = VerticalAlignment.Center,
-                Padding = new Thickness(2, 0),
-                TextAlignment = TextAlignment.Left,
-                TextWrapping = TextWrapping.NoWrap,
-                Watermark = "공종 이름을 입력해주세요"
-            };
-            titleBox.Resources["TextControlBackground"] = Brushes.Transparent;
-            titleBox.Resources["TextControlBackgroundPointerOver"] = Brushes.Transparent;
-            titleBox.Resources["TextControlBackgroundFocused"] = Brushes.Transparent;
-            titleBox.Resources["TextControlBorderBrush"] = Brushes.Transparent;
-            titleBox.Resources["TextControlBorderBrushPointerOver"] = Brushes.Transparent;
-            titleBox.Resources["TextControlBorderBrushFocused"] = Brushes.Transparent;
-            titleBox.Resources["TextControlForeground"] = Brush("#1f252a");
-            titleBox.Resources["TextControlForegroundFocused"] = Brush("#1f252a");
-            titleBox.Resources["TextControlForegroundPointerOver"] = Brush("#1f252a");
-            titleBox.AttachedToVisualTree += (_, _) =>
-            {
-                titleBox.Focus();
-                titleBox.CaretIndex = titleBox.Text?.Length ?? 0;
-            };
-            titleBox.LostFocus += (_, _) =>
-            {
-                if (ReferenceEquals(titleHost.Content, titleBox))
-                {
-                    titleHost.Content = CreateGroupTitleDisplay(group, BeginTitleEdit);
-                }
-            };
-            titleBox.KeyDown += (_, args) =>
-            {
-                if (args.Key != Key.Enter)
-                {
-                    return;
-                }
-
-                CommitTitle(titleBox);
-                args.Handled = true;
-            };
-            titleHost.Content = titleBox;
-        }
-
-        titleHost.Content = CreateGroupTitleDisplay(group, BeginTitleEdit);
-        AddToGrid(header, titleHost, 1, 0);
+        var titleBox = GroupTitleTextBox(group);
+        AddToGrid(header, HoverOutline(
+            titleBox,
+            HorizontalAlignment.Left,
+            VerticalAlignment.Top,
+            new Thickness(0, 4, 0, 0),
+            new Thickness(4, 1)), 1, 0);
 
         Point? rowSelectStart = null;
         root.PointerPressed += (_, args) =>
@@ -1536,43 +1647,188 @@ public sealed partial class MainWindow : Window
         };
         cntPerPage.Children.Add(cntCombo);
         AddToGrid(header, cntPerPage, 2, 0);
-        stack.Children.Add(header);
+        AddToGrid(layout, header, 0, 0);
 
         var phases = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 0 };
-        foreach (var phase in new[] { Phase.Before, Phase.Processing, Phase.After })
-        {
-            phases.Children.Add(PhaseBox(group, phase));
-        }
-        stack.Children.Add(new ScrollViewer
+        phases.Children.Add(PhotoCellBox(group, omit: false));
+        phases.Children.Add(PhotoCellBox(group, omit: true));
+        var photoScroller = new ScrollViewer
         {
             Content = phases,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Disabled
-        });
-        root.Child = stack;
+        };
+        AddToGrid(layout, photoScroller, 0, 1);
+
+        var numberWithInsertControls = GroupNumberWithInsertControls(group, number);
+        numberWithInsertControls.ZIndex = 10;
+        Grid.SetRowSpan(numberWithInsertControls, 2);
+        AddToGrid(layout, numberWithInsertControls, 0, 0);
+
+        root.Child = layout;
         ConfigureGroupReorder(root, group);
         return root;
     }
 
-    private Control CreateGroupTitleDisplay(PhotoGroup group, Action beginEdit)
+    private TextBox GroupTitleTextBox(PhotoGroup group)
     {
-        var hasTitle = !string.IsNullOrWhiteSpace(group.Title);
-        var title = new TextBlock
+        var input = new TextBox
         {
-            Text = hasTitle ? group.Title : "공종 이름을 입력해주세요",
-            Foreground = hasTitle ? Brush("#1f252a") : Brush("#9aa3ab"),
-            VerticalAlignment = VerticalAlignment.Center,
-            TextTrimming = TextTrimming.CharacterEllipsis
+            Text = group.Title,
+            Watermark = group.IsBlankPage ? "빈 페이지로 출력됩니다." : "공종 이름을 입력해주세요",
+            Height = 28,
+            Padding = new Thickness(0),
+            FontSize = 13,
+            LineHeight = 18,
+            Foreground = Brush("#1f252a"),
+            Background = Brushes.Transparent,
+            BorderBrush = Brushes.Transparent,
+            BorderThickness = new Thickness(0),
+            SelectionBrush = Brush("#d8ecff"),
+            CaretBrush = Brush("#1f252a"),
+            TextAlignment = TextAlignment.Left,
+            TextWrapping = TextWrapping.NoWrap,
+            HorizontalContentAlignment = HorizontalAlignment.Left,
+            VerticalContentAlignment = VerticalAlignment.Center
         };
-        title.PointerPressed += (_, args) =>
+        input.Resources["TextControlBackground"] = Brushes.Transparent;
+        input.Resources["TextControlBackgroundPointerOver"] = Brushes.Transparent;
+        input.Resources["TextControlBackgroundFocused"] = Brushes.Transparent;
+        input.Resources["TextControlBorderBrush"] = Brushes.Transparent;
+        input.Resources["TextControlBorderBrushPointerOver"] = Brushes.Transparent;
+        input.Resources["TextControlBorderBrushFocused"] = Brushes.Transparent;
+        input.Resources["TextControlForeground"] = Brush("#1f252a");
+        input.Resources["TextControlForegroundFocused"] = Brush("#1f252a");
+        input.Resources["TextControlForegroundPointerOver"] = Brush("#1f252a");
+        input.GotFocus += (_, _) => SelectGroupForPreview(group.Id);
+        input.LostFocus += (_, _) => input.Text = group.Title;
+        input.KeyDown += (_, args) =>
         {
-            if (args.GetCurrentPoint(title).Properties.IsLeftButtonPressed)
+            if (args.Key != Key.Enter)
             {
-                beginEdit();
-                args.Handled = true;
+                return;
+            }
+
+            var nextTitle = input.Text?.Trim() ?? string.Empty;
+            var changed = !string.Equals(group.Title, nextTitle, StringComparison.Ordinal);
+            group.Title = nextTitle;
+            input.Text = group.Title;
+            if (changed)
+            {
+                SaveToMetadata("구역 이름을 저장했습니다", refreshAfterSave: false);
+            }
+            args.Handled = true;
+        };
+        return input;
+    }
+
+    private Control GroupNumberWithInsertControls(PhotoGroup group, int number)
+    {
+        var numberText = new TextBlock
+        {
+            Text = number.ToString(),
+            FontSize = 16,
+            FontWeight = FontWeight.Bold,
+            Foreground = Brush("#161a1d"),
+            TextAlignment = TextAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center
+        };
+        var numberBorder = new Border
+        {
+            Width = 28,
+            Height = 28,
+            Margin = new Thickness(2, 2, 0, 0),
+            Background = Brushes.Transparent,
+            BorderBrush = Brushes.Transparent,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Child = numberText
+        };
+
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            Spacing = 2
+        };
+        buttons.Children.Add(GroupInsertControlButton("↑ 빈 페이지", "바로 위에 빈 페이지 추가", () => InsertPageBesideGroup(group.Id, after: false, blankPage: true)));
+        buttons.Children.Add(GroupInsertControlButton("↓ 빈 페이지", "바로 아래 빈 페이지 추가", () => InsertPageBesideGroup(group.Id, after: true, blankPage: true)));
+        buttons.Children.Add(GroupInsertControlButton("↑ 공종 페이지", "바로 위에 공종 페이지 추가", () => InsertPageBesideGroup(group.Id, after: false, blankPage: false)));
+        buttons.Children.Add(GroupInsertControlButton("↓ 공종 페이지", "바로 아래 공종 페이지 추가", () => InsertPageBesideGroup(group.Id, after: true, blankPage: false)));
+
+        var overlay = new Border
+        {
+            IsVisible = false,
+            Margin = new Thickness(24, 22, 0, 0),
+            Padding = new Thickness(2),
+            Background = Brushes.White,
+            BorderBrush = Brush("#c8d1da"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(5),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Child = buttons
+        };
+
+        var host = new Grid
+        {
+            Width = 36,
+            Height = 32,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Children =
+            {
+                numberBorder,
+                overlay
             }
         };
-        return title;
+        host.PropertyChanged += (_, args) =>
+        {
+            if (args.Property == InputElement.IsPointerOverProperty)
+            {
+                overlay.IsVisible = host.IsPointerOver;
+                numberBorder.BorderBrush = host.IsPointerOver ? Brush("#2f80ed") : Brushes.Transparent;
+                host.Width = host.IsPointerOver ? 142 : 36;
+                host.Height = host.IsPointerOver ? 146 : 32;
+            }
+        };
+        return host;
+    }
+
+    private Button GroupInsertControlButton(string text, string tooltip, Action action)
+    {
+        var button = CellControlButton(text, tooltip);
+        button.Width = 108;
+        button.FontSize = 12;
+        button.Click += (_, _) => action();
+        return button;
+    }
+
+    private void InsertPageBesideGroup(string groupId, bool after, bool blankPage)
+    {
+        var groupIndex = state.Groups.FindIndex(candidate => candidate.Id == groupId);
+        if (groupIndex < 0)
+        {
+            return;
+        }
+
+        var insertIndex = groupIndex + (after ? 1 : 0);
+        if (blankPage)
+        {
+            state.InsertBlankPage(insertIndex);
+        }
+        else
+        {
+            var insertedGroup = state.InsertGroup(insertIndex);
+            selectedGroupId = insertedGroup.Id;
+        }
+
+        var pageKind = blankPage ? "빈 페이지" : "공종 페이지";
+        var direction = after ? "아래" : "위";
+        SaveToMetadata($"{pageKind}를 바로 {direction}에 추가했습니다", refreshAfterSave: false);
+        RefreshAll();
     }
 
     private void MoveGroup(string groupId, int delta)
@@ -1607,44 +1863,40 @@ public sealed partial class MainWindow : Window
         var group = state.Groups[sourceIndex];
         state.Groups.RemoveAt(sourceIndex);
         state.Groups.Insert(targetIndex, group);
-        selectedGroupId = sourceGroupId;
+        if (!group.IsBlankPage)
+        {
+            selectedGroupId = sourceGroupId;
+        }
         SaveToMetadata("구역 순서를 저장했습니다", refreshAfterSave: false);
         RefreshAll();
     }
 
-    private Control PhaseBox(PhotoGroup group, Phase phase)
+    private Control PhotoCellBox(PhotoGroup group, bool omit)
     {
-        group.NormalizeLabels();
-        var photos = group.Photos(phase);
+        group.NormalizeCells();
+        var cells = omit ? group.Omit : group.Target;
         var slotWidth = ScaledPhotoSize(150, classifiedPhotoScaleLevel);
-        var slotCount = Math.Max(1, photos.Count);
+        var slotCount = Math.Max(1, cells.Count);
         var contentWidth = slotCount * slotWidth;
         var box = new Border
         {
             Width = contentWidth,
             MinHeight = ScaledPhotoSize(196, classifiedPhotoScaleLevel),
             CornerRadius = new CornerRadius(0),
-            Background = Brushes.White,
+            Background = omit ? Brush("#F7F9FA") : Brushes.White,
             BorderBrush = Brush("#e3e8ed"),
             BorderThickness = new Thickness(0, 0, 1, 0),
             Padding = new Thickness(0, 10, 0, 14)
         };
 
         var row = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 0 };
-        if (photos.Count == 0)
+        for (var index = 0; index < cells.Count; index++)
         {
-            row.Children.Add(AssignedPhotoCard(group, phase, string.Empty, group.LabelAt(phase, 0), 0, slotWidth));
-        }
-        else
-        {
-            for (var index = 0; index < photos.Count; index++)
-            {
-                row.Children.Add(AssignedPhotoCard(group, phase, photos[index], group.LabelAt(phase, index), index, slotWidth));
-            }
+            row.Children.Add(AssignedPhotoCard(group, omit, cells[index], index, slotWidth));
         }
 
         box.Child = row;
-        ConfigureDropTarget(box, group, phase);
+        ConfigureDropTarget(box, group, omit);
         return box;
     }
 
@@ -1654,7 +1906,7 @@ public sealed partial class MainWindow : Window
         detailPanel.Margin = new Thickness(0);
 
         var group = state.GroupById(selectedGroupId);
-        if (group is null)
+        if (group is null || group.IsBlankPage)
         {
             detailPanel.Margin = new Thickness(12);
             detailPanel.Children.Add(new TextBlock
@@ -1680,10 +1932,8 @@ public sealed partial class MainWindow : Window
             Spacing = 0
         };
 
-        foreach (var phase in new[] { Phase.Before, Phase.Processing, Phase.After })
-        {
-            content.Children.Add(DetailPhaseSection(group, phase, phase != Phase.After));
-        }
+        content.Children.Add(DetailCellSection(group, omit: false, showBottomBorder: true));
+        content.Children.Add(DetailCellSection(group, omit: true, showBottomBorder: false));
 
         root.Children.Add(new ScrollViewer
         {
@@ -1695,7 +1945,7 @@ public sealed partial class MainWindow : Window
         detailPanel.Children.Add(root);
     }
 
-    private Control DetailPhaseSection(PhotoGroup group, Phase phase, bool showBottomBorder)
+    private Control DetailCellSection(PhotoGroup group, bool omit, bool showBottomBorder)
     {
         var section = new Border
         {
@@ -1709,33 +1959,25 @@ public sealed partial class MainWindow : Window
         };
 
         var stack = new StackPanel { Spacing = 0 };
-        group.NormalizeLabels();
-        var photos = group.Photos(phase);
-
-        if (photos.Count == 0)
+        group.NormalizeCells();
+        var cells = omit ? group.Omit : group.Target;
+        foreach (var cell in cells)
         {
-            stack.Children.Add(DetailPhotoRow(phase, group.LabelAt(phase, 0), string.Empty));
-        }
-        else
-        {
-            for (var index = 0; index < photos.Count; index++)
-            {
-                stack.Children.Add(DetailPhotoRow(phase, group.LabelAt(phase, index), photos[index]));
-            }
+            stack.Children.Add(DetailPhotoRow(omit, cell.Label, cell.Image));
         }
 
         section.Child = stack;
-        ConfigureDropTarget(section, group, phase);
+        ConfigureDropTarget(section, group, omit);
         return section;
     }
 
-    private Control DetailPhotoRow(Phase phase, string label, string relativePath)
+    private Control DetailPhotoRow(bool omit, string label, string relativePath)
     {
         var row = new Grid
         {
             ColumnDefinitions = new ColumnDefinitions("46,*"),
             MinHeight = 320,
-            Background = Brushes.White
+            Background = omit ? Brush("#F7F9FA") : Brushes.White
         };
 
         AddToGrid(row, new Border
@@ -1756,13 +1998,13 @@ public sealed partial class MainWindow : Window
 
         if (!string.IsNullOrEmpty(relativePath))
         {
-            AddToGrid(row, DetailPhotoCard(phase, relativePath), 1, 0);
+            AddToGrid(row, DetailPhotoCard(relativePath), 1, 0);
         }
 
         return row;
     }
 
-    private Control DetailPhotoCard(Phase phase, string relativePath)
+    private Control DetailPhotoCard(string relativePath)
     {
         var absolutePath = FileScanner.ToAbsolutePath(state.RootDir, relativePath);
         var image = new Image
@@ -2448,25 +2690,33 @@ public sealed partial class MainWindow : Window
         grid.Children.Add(child);
     }
 
-    private static string PhaseItemLabel(Phase phase, int index, int count)
+    private static Border HoverOutline(
+        Control child,
+        HorizontalAlignment horizontalAlignment,
+        VerticalAlignment verticalAlignment,
+        Thickness margin,
+        Thickness padding)
     {
-        return count <= 1 ? phase.Label() : $"{phase.Label()}{index + 1}";
-    }
-
-    private static IBrush PhaseBackground(Phase phase)
-    {
-        return phase switch
+        var outline = new Border
         {
-            Phase.Before => Brush("#fff8f4"),
-            Phase.Processing => Brush("#906a5c"),
-            Phase.After => Brush("#30373d"),
-            _ => Brushes.White
+            Margin = margin,
+            Padding = padding,
+            Background = Brushes.Transparent,
+            BorderBrush = Brushes.Transparent,
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(4),
+            HorizontalAlignment = horizontalAlignment,
+            VerticalAlignment = verticalAlignment,
+            Child = child
         };
-    }
-
-    private static IBrush PhaseForeground(Phase phase)
-    {
-        return phase == Phase.Before ? Brush("#1f252a") : Brushes.White;
+        outline.PropertyChanged += (_, args) =>
+        {
+            if (args.Property == InputElement.IsPointerOverProperty)
+            {
+                outline.BorderBrush = outline.IsPointerOver ? Brush("#2f80ed") : Brushes.Transparent;
+            }
+        };
+        return outline;
     }
 
     private static IBrush Brush(string color)

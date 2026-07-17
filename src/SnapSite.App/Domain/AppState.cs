@@ -42,18 +42,38 @@ public sealed class AppState
 
     public PhotoGroup AddGroup()
     {
+        return InsertGroup(Groups.Count);
+    }
+
+    public PhotoGroup InsertGroup(int index)
+    {
         var number = NextGroupNumber();
         var group = new PhotoGroup
         {
             Id = $"group-{number}",
             Title = string.Empty,
-            CntPerPage = 3,
-            BeforeLabels = [Phase.Before.Label()],
-            ProcessingLabels = [Phase.Processing.Label()],
-            AfterLabels = [Phase.After.Label()]
+            Omit = [],
+            CntPerPage = 3
         };
-        Groups.Add(group);
+        Groups.Insert(Math.Clamp(index, 0, Groups.Count), group);
         return group;
+    }
+
+    public PhotoGroup AddBlankPage()
+    {
+        return InsertBlankPage(Groups.Count);
+    }
+
+    public PhotoGroup InsertBlankPage(int index)
+    {
+        var blankPage = new PhotoGroup
+        {
+            Id = $"blank-page-{Guid.NewGuid():N}",
+            Target = [],
+            Omit = []
+        };
+        Groups.Insert(Math.Clamp(index, 0, Groups.Count), blankPage);
+        return blankPage;
     }
 
     public void RemoveGroup(string id)
@@ -66,38 +86,206 @@ public sealed class AppState
         return Groups.FirstOrDefault(group => group.Id == id);
     }
 
-    public void AssignPhoto(string groupId, Phase phase, string relativePath)
+    public bool RemoveCell(string groupId, bool omit, int cellIndex, out string removedPhoto)
     {
-        relativePath = NormalizePath(relativePath);
-        var movedLabel = RemovePhotoWithLabel(relativePath);
-
+        removedPhoto = string.Empty;
         var group = GroupById(groupId);
-        if (group is null)
+        if (group is null || group.IsBlankPage)
         {
-            return;
+            return false;
         }
 
-        group.InsertPhoto(phase, relativePath, group.Photos(phase).Count, movedLabel);
+        group.NormalizeCells();
+        var cells = omit ? group.Omit : group.Target;
+        if (cellIndex < 0 || cellIndex >= cells.Count)
+        {
+            return false;
+        }
+
+        removedPhoto = cells[cellIndex].Image;
+        cells.RemoveAt(cellIndex);
+        return true;
+    }
+
+    public bool InsertEmptyCell(string groupId, bool omit, int insertIndex)
+    {
+        var group = GroupById(groupId);
+        if (group is null || group.IsBlankPage)
+        {
+            return false;
+        }
+
+        group.NormalizeCells();
+        var cells = omit ? group.Omit : group.Target;
+        cells.Insert(Math.Clamp(insertIndex, 0, cells.Count), new PhotoCell());
+        return true;
+    }
+
+    public bool PlacePhotoAt(string groupId, bool omit, int cellIndex, string relativePath, out bool filledExistingCell)
+    {
+        filledExistingCell = false;
+        relativePath = NormalizePath(relativePath);
+        var group = GroupById(groupId);
+        if (group is null || string.IsNullOrWhiteSpace(relativePath))
+        {
+            return false;
+        }
+
+        group.NormalizeCells();
+        var cells = omit ? group.Omit : group.Target;
+        if (cells.Count == 0 && cellIndex < 0)
+        {
+            ClearPhotoFromAllGroups(relativePath);
+            cells.Add(new PhotoCell { Image = relativePath });
+            return true;
+        }
+
+        if (cellIndex < 0 || cellIndex >= cells.Count)
+        {
+            return false;
+        }
+
+        var targetCell = cells[cellIndex];
+        var reuseTargetCell = string.IsNullOrWhiteSpace(targetCell.Image);
+        ClearPhotoFromAllGroups(relativePath);
+        if (reuseTargetCell)
+        {
+            targetCell.Image = relativePath;
+            filledExistingCell = true;
+            return true;
+        }
+
+        var insertIndex = Math.Clamp(cellIndex + 1, 0, cells.Count);
+        cells.Insert(insertIndex, new PhotoCell { Image = relativePath });
+        return true;
+    }
+
+    public int PlacePhotosBesideCell(
+        string groupId,
+        bool omit,
+        int cellIndex,
+        IReadOnlyList<string> relativePaths)
+    {
+        var group = GroupById(groupId);
+        if (group is null || relativePaths.Count == 0)
+        {
+            return 0;
+        }
+
+        group.NormalizeCells();
+        var cells = omit ? group.Omit : group.Target;
+        if (cellIndex < 0 || cellIndex >= cells.Count)
+        {
+            return 0;
+        }
+
+        var normalizedPaths = NormalizeUniquePaths(relativePaths);
+        if (normalizedPaths.Count == 0)
+        {
+            return 0;
+        }
+
+        var targetCell = cells[cellIndex];
+        var reuseTargetCell = string.IsNullOrWhiteSpace(targetCell.Image);
+        var reusableCells = reuseTargetCell
+            ? cells.Skip(cellIndex).Where(cell => string.IsNullOrWhiteSpace(cell.Image)).ToList()
+            : [];
+        var reusableOmitCells = reuseTargetCell && !omit
+            ? group.Omit.Where(cell => string.IsNullOrWhiteSpace(cell.Image)).ToList()
+            : [];
+        foreach (var relativePath in normalizedPaths)
+        {
+            ClearPhotoFromAllGroups(relativePath);
+        }
+
+        if (!reuseTargetCell)
+        {
+            var insertIndex = cells.IndexOf(targetCell) + 1;
+            foreach (var relativePath in normalizedPaths)
+            {
+                cells.Insert(insertIndex++, new PhotoCell { Image = relativePath });
+            }
+
+            return normalizedPaths.Count;
+        }
+
+        var pathIndex = 0;
+        foreach (var cell in reusableCells)
+        {
+            if (pathIndex >= normalizedPaths.Count)
+            {
+                break;
+            }
+
+            cell.Image = normalizedPaths[pathIndex++];
+        }
+
+        foreach (var cell in reusableOmitCells)
+        {
+            if (pathIndex >= normalizedPaths.Count)
+            {
+                break;
+            }
+
+            cell.Image = normalizedPaths[pathIndex++];
+        }
+
+        var overflowCells = omit ? cells : group.Omit;
+        while (pathIndex < normalizedPaths.Count)
+        {
+            overflowCells.Add(new PhotoCell { Image = normalizedPaths[pathIndex++] });
+        }
+
+        return normalizedPaths.Count;
+    }
+
+    public int PlacePhotosInCollection(
+        string groupId,
+        bool omit,
+        IReadOnlyList<string> relativePaths)
+    {
+        var group = GroupById(groupId);
+        if (group is null || relativePaths.Count == 0)
+        {
+            return 0;
+        }
+
+        group.NormalizeCells();
+        var cells = omit ? group.Omit : group.Target;
+        var normalizedPaths = NormalizeUniquePaths(relativePaths);
+
+        foreach (var relativePath in normalizedPaths)
+        {
+            ClearPhotoFromAllGroups(relativePath);
+        }
+
+        var pathIndex = 0;
+        var reusableCells = cells.Where(cell => string.IsNullOrWhiteSpace(cell.Image)).ToList();
+        foreach (var cell in reusableCells)
+        {
+            if (pathIndex >= normalizedPaths.Count)
+            {
+                break;
+            }
+
+            cell.Image = normalizedPaths[pathIndex++];
+        }
+
+        while (pathIndex < normalizedPaths.Count)
+        {
+            cells.Add(new PhotoCell { Image = normalizedPaths[pathIndex++] });
+        }
+
+        return normalizedPaths.Count;
     }
 
     public void RemovePhoto(string relativePath)
     {
-        RemovePhotoWithLabel(relativePath);
-    }
-
-    public string? RemovePhotoWithLabel(string relativePath)
-    {
         relativePath = NormalizePath(relativePath);
         foreach (var group in Groups)
         {
-            var removedLabel = group.RemovePhotoWithLabel(relativePath);
-            if (removedLabel is not null)
-            {
-                return removedLabel;
-            }
+            group.RemovePhotoCell(relativePath);
         }
-
-        return null;
     }
 
     public HashSet<string> AssignedSet()
@@ -105,9 +293,17 @@ public sealed class AppState
         var assigned = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var group in Groups)
         {
-            foreach (var path in group.Before.Concat(group.Processing).Concat(group.After))
+            if (group.IsBlankPage)
             {
-                assigned.Add(NormalizePath(path));
+                continue;
+            }
+
+            foreach (var cell in group.AllCells())
+            {
+                if (!string.IsNullOrWhiteSpace(cell.Image))
+                {
+                    assigned.Add(NormalizePath(cell.Image));
+                }
             }
         }
 
@@ -120,29 +316,49 @@ public sealed class AppState
         newPath = NormalizePath(newPath).TrimEnd('/');
         foreach (var group in Groups)
         {
-            ReplacePaths(group.Before, oldPath, newPath, includeChildren);
-            ReplacePaths(group.Processing, oldPath, newPath, includeChildren);
-            ReplacePaths(group.After, oldPath, newPath, includeChildren);
+            foreach (var cell in group.AllCells())
+            {
+                cell.Image = ReplacePath(cell.Image, oldPath, newPath, includeChildren);
+            }
         }
     }
 
-    private static void ReplacePaths(List<string> paths, string oldPath, string newPath, bool includeChildren)
+    private void ClearPhotoFromAllGroups(string relativePath)
     {
-        var oldPrefix = oldPath + "/";
-        for (var i = 0; i < paths.Count; i++)
+        foreach (var group in Groups)
         {
-            var path = NormalizePath(paths[i]);
-            if (SamePath(path, oldPath))
-            {
-                paths[i] = newPath;
-                continue;
-            }
+            group.ClearPhoto(relativePath);
+        }
+    }
 
-            if (includeChildren && path.StartsWith(oldPrefix, StringComparison.OrdinalIgnoreCase))
+    private static List<string> NormalizeUniquePaths(IEnumerable<string> relativePaths)
+    {
+        var normalizedPaths = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var relativePath in relativePaths)
+        {
+            var normalized = NormalizePath(relativePath);
+            if (!string.IsNullOrWhiteSpace(normalized) && seen.Add(normalized))
             {
-                paths[i] = newPath + path[oldPath.Length..];
+                normalizedPaths.Add(normalized);
             }
         }
+
+        return normalizedPaths;
+    }
+
+    private static string ReplacePath(string path, string oldPath, string newPath, bool includeChildren)
+    {
+        path = NormalizePath(path);
+        if (SamePath(path, oldPath))
+        {
+            return newPath;
+        }
+
+        var oldPrefix = oldPath + "/";
+        return includeChildren && path.StartsWith(oldPrefix, StringComparison.OrdinalIgnoreCase)
+            ? newPath + path[oldPath.Length..]
+            : path;
     }
 
     private int NextGroupNumber()
@@ -167,6 +383,6 @@ public sealed class AppState
 
     public static string NormalizePath(string path)
     {
-        return path.Replace('\\', '/');
+        return (path ?? string.Empty).Replace('\\', '/');
     }
 }

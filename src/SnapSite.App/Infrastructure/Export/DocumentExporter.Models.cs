@@ -35,12 +35,13 @@ public sealed partial class DocumentExporter
         string DocxTarget,
         string HwpxId,
         string HwpxTarget,
+        string GroupId,
         string GroupTitle,
-        Phase Phase);
+        int CellIndex);
 
-    private sealed record ExportPage(string GroupTitle, int CntPerPage, List<ExportPageItem> Items);
+    private sealed record ExportPage(string GroupTitle, int CntPerPage, List<ExportPageItem> Items, bool IsBlankPage = false);
 
-    private sealed record ExportPageItem(string Label, ExportImage Image);
+    private sealed record ExportPageItem(string Label, ExportImage? Image);
 
     private sealed record HwpxCell(int Col, int ColSpan, int Width, string Content, int MarginLeft, int MarginRight, int MarginTop, int MarginBottom)
     {

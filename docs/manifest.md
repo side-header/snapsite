@@ -10,13 +10,15 @@
     {
       "id": "group-1",
       "title": "은행나무 암수교체",
-      "cntPerPage": 3,
-      "before": ["site/before-1.jpg"],
-      "beforeLabels": ["전"],
-      "processing": ["site/progress-1.jpg"],
-      "processingLabels": ["중"],
-      "after": ["site/after-1.jpg"],
-      "afterLabels": ["후"]
+      "target": [
+        { "image": "site/before-1.jpg", "label": "전" },
+        { "image": "site/progress-1.jpg", "label": "중" },
+        { "image": "site/after-1.jpg", "label": "후" }
+      ],
+      "omit": [
+        { "image": "site/reference.jpg", "label": "" }
+      ],
+      "cntPerPage": 3
     }
   ],
   "exportSettings": {
@@ -85,10 +87,13 @@
 | `appVersion` | SiteSnap version that last wrote the manifest. Older manifests may not have this field until saved again. |
 | `rootDir` | Absolute path of the selected base folder. It is updated when a folder is opened in the app. |
 | `groups[].id` | Internal group identifier. |
+| blank-page group shape | A group is exported as a blank page when `title` is empty and both `target` and `omit` are empty arrays. Older `isBlankPage: true` entries are migrated to this shape and the legacy field is removed on the next save. |
 | `groups[].title` | Group title rendered in the right cell of the bottom `공종` row. |
 | `groups[].cntPerPage` | Number of photos per photo-sheet page. Use `3` or `4`. |
-| `groups[].before`, `processing`, `after` | Photo paths relative to the base folder. They are exported as the `전`, `중`, and `후` phases. |
-| `groups[].beforeLabels`, `processingLabels`, `afterLabels` | Labels stored in the same order as each photo path. Empty labels show the gray `X` hint in the app and export as blank cells in documents. |
+| `groups[].target[]` | Ordered cells rendered during export. An entry with an empty `image` becomes a labeled table row with an empty photo cell. |
+| `groups[].omit[]` | Ordered classified cells excluded from HWPX and DOCX exports. |
+| `groups[].target[].image`, `groups[].omit[].image` | Photo path relative to the base folder. An empty string represents an empty cell. |
+| `groups[].target[].label`, `groups[].omit[].label` | Editable cell label. A move within classified groups retains the source cell label; unclassifying the photo removes its entire cell and label. |
 | `exportSettings.hwpxImageDpi`, `exportSettings.docxImageDpi` | DPI used when resizing photos for HWPX and DOCX exports. Values are clamped from `72` to `600`; the default is `300`. |
 | `exportSettings.hwpxJpegQuality`, `exportSettings.docxJpegQuality` | JPEG quality used when encoding resized photos for HWPX and DOCX exports. Values are clamped from `0` to `100`; the default is `85`. |
 | `exportSettings.page3` | Paper and cell margin settings for groups with `cntPerPage` set to `3`. |
@@ -105,3 +110,15 @@
 | `paperTemplates.*.lineSpacingPercent` | Paragraph line-spacing percentage. For example, `160` means 160%. |
 | `paperTemplates.*.fontFamily` | Font family used for cover and photo-sheet text. The default is `함초롬바탕`. |
 | `paperTemplates.*.showPageNumber` | Whether page numbers are shown during export. |
+
+New groups start with empty `전`, `중`, and `후` target cells and an empty omit array. Older manifests using `before`, `processing`, `after`, `other`, and their label arrays are migrated when loaded; an explicit old other label is preserved, while a missing one defaults to an empty string. The next save writes only `target` and `omit`.
+
+Dropping onto an empty cell updates that cell's `image` and preserves its label and position. New cells are created only after the applicable empty cells have been used.
+
+Dragging a classified photo back to the unclassified area removes its entire cell. Saved `target` and `omit` arrays may therefore be empty and are not repopulated when reopened.
+
+The classified-card `−` control removes the selected array entry; when it contained a photo, that photo becomes unclassified. Target-card `←` and `→` controls persist new adjacent target entries with empty `image` and `label` values; omit cards do not expose insertion controls.
+
+An ordered multi-photo drop on an occupied exact cell inserts every photo immediately to its right in the same array. From an empty target cell, right-side empty target entries are reused first, followed by empty omit entries and then new omit entries. From an empty omit cell, right-side empty omit entries are reused before new omit entries are appended. Reused labels are preserved.
+
+An ordered multi-photo drop on a target or omit area background also stays entirely in that array. Empty entries are reused in order and remaining photos append as unlabeled cells. Group headers do not accept photo drops.

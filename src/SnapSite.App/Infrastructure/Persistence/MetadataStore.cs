@@ -83,11 +83,19 @@ public sealed class MetadataStore
 
         foreach (var group in state.Groups)
         {
+            group.MigrateLegacyCells();
+            if (group.IsBlankPage)
+            {
+                group.Title = string.Empty;
+                group.NormalizeCells();
+                continue;
+            }
+
             group.CntPerPage = NormalizeCntPerPage(group.CntPerPage);
-            (group.Before, group.BeforeLabels) = CleanPathsWithLabels(rootDir, group.Before, group.BeforeLabels, Phase.Before);
-            (group.Processing, group.ProcessingLabels) = CleanPathsWithLabels(rootDir, group.Processing, group.ProcessingLabels, Phase.Processing);
-            (group.After, group.AfterLabels) = CleanPathsWithLabels(rootDir, group.After, group.AfterLabels, Phase.After);
-            group.NormalizeLabels();
+            group.NormalizeCells();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            SanitizeCells(rootDir, group.Target, seen);
+            SanitizeCells(rootDir, group.Omit, seen);
         }
     }
 
@@ -96,33 +104,26 @@ public sealed class MetadataStore
         return cntPerPage == 4 ? 4 : 3;
     }
 
-    private static (List<string> Paths, List<string> Labels) CleanPathsWithLabels(
+    private static void SanitizeCells(
         string rootDir,
-        IReadOnlyList<string> paths,
-        IReadOnlyList<string> labels,
-        Phase phase)
+        IEnumerable<PhotoCell> cells,
+        HashSet<string> seen)
     {
-        var cleanPaths = new List<string>();
-        var cleanLabels = new List<string>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        for (var i = 0; i < paths.Count; i++)
+        foreach (var cell in cells)
         {
-            var path = AppState.NormalizePath(paths[i]);
-            if (FileScanner.IsIgnoredRelativePath(path) || !File.Exists(FileScanner.ToAbsolutePath(rootDir, path)) || !seen.Add(path))
+            cell.Label = cell.Label?.Trim() ?? string.Empty;
+            var path = AppState.NormalizePath(cell.Image ?? string.Empty);
+            if (string.IsNullOrWhiteSpace(path))
             {
+                cell.Image = string.Empty;
                 continue;
             }
 
-            cleanPaths.Add(path);
-            cleanLabels.Add(i < labels.Count ? labels[i].Trim() : (cleanPaths.Count == 1 ? phase.Label() : string.Empty));
+            cell.Image = FileScanner.IsIgnoredRelativePath(path) ||
+                         !File.Exists(FileScanner.ToAbsolutePath(rootDir, path)) ||
+                         !seen.Add(path)
+                ? string.Empty
+                : path;
         }
-
-        if (cleanLabels.Count == 0)
-        {
-            cleanLabels.Add(labels.Count > 0 ? labels[0].Trim() : phase.Label());
-        }
-
-        return (cleanPaths, cleanLabels);
     }
 }

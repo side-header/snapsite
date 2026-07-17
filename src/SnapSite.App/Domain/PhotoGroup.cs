@@ -10,139 +10,199 @@ public sealed class PhotoGroup
     [JsonPropertyName("title")]
     public string Title { get; set; } = string.Empty;
 
-    [JsonPropertyName("before")]
-    public List<string> Before { get; set; } = [];
+    [JsonPropertyName("isBlankPage")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public bool? LegacyIsBlankPage { get; set; }
 
-    [JsonPropertyName("beforeLabels")]
-    public List<string> BeforeLabels { get; set; } = [];
+    [JsonPropertyName("target")]
+    public List<PhotoCell> Target { get; set; } = DefaultTargetCells();
 
-    [JsonPropertyName("processing")]
-    public List<string> Processing { get; set; } = [];
-
-    [JsonPropertyName("processingLabels")]
-    public List<string> ProcessingLabels { get; set; } = [];
-
-    [JsonPropertyName("after")]
-    public List<string> After { get; set; } = [];
-
-    [JsonPropertyName("afterLabels")]
-    public List<string> AfterLabels { get; set; } = [];
+    [JsonPropertyName("omit")]
+    public List<PhotoCell> Omit { get; set; } = DefaultOmitCells();
 
     [JsonPropertyName("cntPerPage")]
     public int CntPerPage { get; set; } = 3;
 
-    public List<string> Photos(Phase phase)
+    [JsonIgnore]
+    public bool IsBlankPage =>
+        string.IsNullOrWhiteSpace(Title) &&
+        Target is { Count: 0 } &&
+        Omit is { Count: 0 };
+
+    [JsonPropertyName("before")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? LegacyBefore { get; set; }
+
+    [JsonPropertyName("beforeLabels")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? LegacyBeforeLabels { get; set; }
+
+    [JsonPropertyName("processing")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? LegacyProcessing { get; set; }
+
+    [JsonPropertyName("processingLabels")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? LegacyProcessingLabels { get; set; }
+
+    [JsonPropertyName("after")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? LegacyAfter { get; set; }
+
+    [JsonPropertyName("afterLabels")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? LegacyAfterLabels { get; set; }
+
+    [JsonPropertyName("other")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? LegacyOther { get; set; }
+
+    [JsonPropertyName("otherLabels")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? LegacyOtherLabels { get; set; }
+
+    public IEnumerable<PhotoCell> AllCells()
     {
-        return phase switch
-        {
-            Phase.Before => Before,
-            Phase.Processing => Processing,
-            Phase.After => After,
-            _ => Before
-        };
+        return Target.Concat(Omit);
     }
 
-    public List<string> Labels(Phase phase)
+    public bool HasAnyPhoto()
     {
-        return phase switch
-        {
-            Phase.Before => BeforeLabels,
-            Phase.Processing => ProcessingLabels,
-            Phase.After => AfterLabels,
-            _ => BeforeLabels
-        };
+        return AllCells().Any(cell => !string.IsNullOrWhiteSpace(cell.Image));
     }
 
-    public string LabelAt(Phase phase, int index)
+    public bool ClearPhoto(string relativePath)
     {
-        NormalizeLabels();
-        var labels = Labels(phase);
-        return index >= 0 && index < labels.Count ? labels[index] : string.Empty;
-    }
-
-    public void SetLabel(Phase phase, int index, string label)
-    {
-        EnsureLabelCount(phase, index + 1);
-        Labels(phase)[index] = label.Trim();
-    }
-
-    public void InsertPhoto(Phase phase, string relativePath, int targetIndex, string? label)
-    {
-        NormalizeLabels();
-        var photos = Photos(phase);
-        var labels = Labels(phase);
-        targetIndex = Math.Clamp(targetIndex, 0, photos.Count);
-
-        var nextLabel = label;
-        if (nextLabel is null && photos.Count == 0 && targetIndex == 0 && labels.Count > 0)
+        var changed = false;
+        foreach (var cell in AllCells())
         {
-            nextLabel = labels[0];
-        }
-
-        photos.Insert(targetIndex, relativePath);
-        if (photos.Count == 1 && labels.Count == 1)
-        {
-            labels[0] = nextLabel ?? string.Empty;
-        }
-        else
-        {
-            labels.Insert(targetIndex, nextLabel ?? string.Empty);
-        }
-
-        NormalizeLabels();
-    }
-
-    public string? RemovePhotoWithLabel(string relativePath)
-    {
-        foreach (var phase in new[] { Phase.Before, Phase.Processing, Phase.After })
-        {
-            var photos = Photos(phase);
-            var index = photos.FindIndex(path => AppState.SamePath(path, relativePath));
-            if (index < 0)
+            if (!string.IsNullOrWhiteSpace(cell.Image) && AppState.SamePath(cell.Image, relativePath))
             {
-                continue;
+                cell.Image = string.Empty;
+                changed = true;
             }
+        }
 
-            photos.RemoveAt(index);
-            var labels = Labels(phase);
-            var label = index < labels.Count ? labels[index] : string.Empty;
-            if (index < labels.Count)
+        return changed;
+    }
+
+    public bool RemovePhotoCell(string relativePath)
+    {
+        var removedTarget = Target.RemoveAll(cell =>
+            !string.IsNullOrWhiteSpace(cell.Image) && AppState.SamePath(cell.Image, relativePath));
+        var removedOmit = Omit.RemoveAll(cell =>
+            !string.IsNullOrWhiteSpace(cell.Image) && AppState.SamePath(cell.Image, relativePath));
+        return removedTarget + removedOmit > 0;
+    }
+
+    public void NormalizeCells()
+    {
+        Target ??= [];
+        Omit ??= [];
+
+        if (LegacyIsBlankPage == true)
+        {
+            Title = string.Empty;
+            Target.Clear();
+            Omit.Clear();
+            LegacyIsBlankPage = null;
+            ClearLegacyFields();
+            return;
+        }
+
+        LegacyIsBlankPage = null;
+
+        foreach (var cell in AllCells())
+        {
+            cell.Image = AppState.NormalizePath(cell.Image ?? string.Empty);
+            cell.Label = cell.Label?.Trim() ?? string.Empty;
+        }
+    }
+
+    public void MigrateLegacyCells()
+    {
+        if (LegacyIsBlankPage == true)
+        {
+            NormalizeCells();
+            return;
+        }
+
+        if (!HasLegacyFields())
+        {
+            NormalizeCells();
+            return;
+        }
+
+        Target = [];
+        AppendLegacyPhase(Target, LegacyBefore, LegacyBeforeLabels, "전");
+        AppendLegacyPhase(Target, LegacyProcessing, LegacyProcessingLabels, "중");
+        AppendLegacyPhase(Target, LegacyAfter, LegacyAfterLabels, "후");
+
+        Omit = [];
+        AppendLegacyPhase(Omit, LegacyOther, LegacyOtherLabels, string.Empty);
+
+        ClearLegacyFields();
+        NormalizeCells();
+    }
+
+    public static List<PhotoCell> DefaultTargetCells()
+    {
+        return
+        [
+            new PhotoCell { Label = "전" },
+            new PhotoCell { Label = "중" },
+            new PhotoCell { Label = "후" }
+        ];
+    }
+
+    public static List<PhotoCell> DefaultOmitCells()
+    {
+        return [new PhotoCell()];
+    }
+
+    private bool HasLegacyFields()
+    {
+        return LegacyBefore is not null ||
+               LegacyBeforeLabels is not null ||
+               LegacyProcessing is not null ||
+               LegacyProcessingLabels is not null ||
+               LegacyAfter is not null ||
+               LegacyAfterLabels is not null ||
+               LegacyOther is not null ||
+               LegacyOtherLabels is not null;
+    }
+
+    private void ClearLegacyFields()
+    {
+        LegacyBefore = null;
+        LegacyBeforeLabels = null;
+        LegacyProcessing = null;
+        LegacyProcessingLabels = null;
+        LegacyAfter = null;
+        LegacyAfterLabels = null;
+        LegacyOther = null;
+        LegacyOtherLabels = null;
+    }
+
+    private static void AppendLegacyPhase(
+        List<PhotoCell> destination,
+        IReadOnlyList<string>? photos,
+        IReadOnlyList<string>? labels,
+        string defaultLabel)
+    {
+        photos ??= [];
+        labels ??= [];
+        var count = Math.Max(photos.Count, 1);
+        for (var index = 0; index < count; index++)
+        {
+            destination.Add(new PhotoCell
             {
-                labels.RemoveAt(index);
-            }
-
-            NormalizeLabels();
-            return label;
-        }
-
-        NormalizeLabels();
-        return null;
-    }
-
-    public void NormalizeLabels()
-    {
-        NormalizeLabels(Phase.Before);
-        NormalizeLabels(Phase.Processing);
-        NormalizeLabels(Phase.After);
-    }
-
-    private void EnsureLabelCount(Phase phase, int count)
-    {
-        var labels = Labels(phase);
-        while (labels.Count < count)
-        {
-            labels.Add(labels.Count == 0 ? phase.Label() : string.Empty);
+                Image = index < photos.Count ? AppState.NormalizePath(photos[index]) : string.Empty,
+                Label = index < labels.Count
+                    ? labels[index]?.Trim() ?? string.Empty
+                    : index == 0 ? defaultLabel : string.Empty
+            });
         }
     }
 
-    private void NormalizeLabels(Phase phase)
-    {
-        var labels = Labels(phase);
-        var count = Math.Max(Photos(phase).Count, 1);
-        EnsureLabelCount(phase, count);
-        if (labels.Count > count)
-        {
-            labels.RemoveRange(count, labels.Count - count);
-        }
-    }
 }

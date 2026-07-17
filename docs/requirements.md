@@ -2,7 +2,7 @@
 
 ## Purpose
 
-SiteSnap is a desktop app for organizing construction-site photos and exporting photo-sheet documents. A user opens a base folder, classifies photos into work categories, assigns each photo to the `before`, `processing`, or `after` phase, and exports the result as either HWPX or DOCX.
+SiteSnap is a desktop app for organizing construction-site photos and exporting photo-sheet documents. A user opens a base folder, arranges labeled photo cells in exported `target` or excluded `omit` lists, and exports the result as either HWPX or DOCX.
 
 The app is developed with C# and Avalonia UI. It targets macOS and Windows as a self-contained desktop application, without a web server, installer requirement, background service, or database.
 
@@ -49,7 +49,7 @@ The explorer and preview areas can be toggled from the top menu. The central wor
 - Left-side panel icon: toggles the explorer area.
 - Right-side panel icon: toggles the preview area.
 
-The `공종 추가` action belongs to the classified-area header and is visible only after a folder is opened.
+The `공종 페이지 추가` action belongs to the classified-area header and is visible only after a folder is opened.
 
 ## Program Information Dialog
 
@@ -73,21 +73,48 @@ The `공종 추가` action belongs to the classified-area header and is visible 
 ## Classified Area
 
 - The area is hidden until a base folder is opened.
-- Its header contains `공종 추가`, zoom-out, and zoom-in controls.
-- If a folder is open and there are no work categories, it shows `아직 공종이 없습니다. 공종 추가를 눌러 시작하세요.` in gray.
-- `공종 추가` creates a new empty work category.
+- Its header contains `빈 페이지 추가`, `공종 페이지 추가`, zoom-out, and zoom-in controls.
+- If a folder is open and there are no work categories, it shows `아직 공종이 없습니다. 공종 페이지 추가를 눌러 시작하세요.` in gray.
+- `공종 페이지 추가` creates a new empty work category.
+- `빈 페이지 추가` creates an item with an empty title and empty target and omit lists. This shape is treated as a blank page and can be reordered and removed like a category.
+- The blank-page title guide reads `빈 페이지로 출력됩니다.`. Entering a title changes the zero-cell item into a normal category.
+- A blank page uses the normal category-row layout and shows one-slot-width empty target and omit drop areas without persisting placeholder cells.
+- Dropping one or more photos into either blank-page area creates empty-label cells only in that collection and changes the item into a normal category.
+- The header separately counts work categories, classified photos, and blank pages.
 - Each category row displays:
   - row number
   - editable category name
   - per-page photo count selector
   - remove button
-  - `before`, `progress`, and `after` photo columns
+  - ordered `target` and `omit` photo cells
 - The remove button is shown as an `X` control and styled in red.
 - A category name placeholder is shown in gray when empty.
-- A category can contain photos in `전`, `중`, and `후` phases.
+- A new category contains empty `전`, `중`, and `후` target cells and an empty omit list.
+- Empty target and omit labels show no watermark or guide character.
+- An empty classified cell keeps its editable label and shows a white photo-card box without an image placeholder.
+- Hovering a target photo or empty card shows centered bottom `−`, `←`, and `→` controls without changing the row height.
+- Hovering an omit photo or empty card shows only the centered bottom `−` control.
+- `−` removes the exact cell and unclassifies its photo if present; target `←` and `→` insert an empty unlabeled target cell immediately beside it.
+- Hover controls do not initiate photo dragging, preview, or filename editing.
+- A single-photo drop fills the exact cell when its image is empty; an occupied drop cell inserts a new unlabeled cell immediately to its right.
+- Moving a photo between classified cells clears its source image while retaining the source cell and label.
+- Omit cells count as classified and appear in the category preview, but are excluded from HWPX and DOCX exports.
 - Photos can be reordered or moved by drag and drop.
-- A photo can belong to only one category and one phase at a time.
-- Dragging a classified photo back to the unclassified area removes it from classification.
+- A normal click selects one unclassified photo and sets the range anchor.
+- Shift-click replaces the selection with every visible selectable photo between the anchor and clicked photo.
+- Ctrl/Command-click toggles one photo, while Ctrl/Command+Shift-click adds an anchored visible range to the existing selection.
+- Assigned photos and photos inside collapsed folders are excluded from range selection.
+- When at least two photos are selected, green top-right badges show their 1-based selection order.
+- Dragging any selected card moves the ordered multi-selection as one operation.
+- When multiple photos are dropped on an exact empty target cell, empty target cells from the drop position to the right are filled in selection order, skipping occupied cells.
+- Target overflow fills existing empty omit cells from left to right and then appends empty-label omit cells.
+- An exact empty omit-cell drop fills empty omit cells from that position to the right and appends any remainder to omit.
+- When multiple photos are dropped on an exact occupied cell, every selected photo is inserted immediately to its right.
+- Reused empty cells retain their labels, and occupied-cell insertions keep selection order with empty labels.
+- Multi-photo drops on a target or omit area background reuse empty cells and append remaining photos only within that destination collection.
+- Group headers reject photo drops because they do not identify a target or omit destination; group reorder dragging remains available.
+- A photo can belong to only one cell at a time.
+- Dragging a classified photo back to the unclassified area removes its entire cell and label. Deleted default cells are not recreated after saving or reopening.
 - Zoom-in and zoom-out are limited to five steps in each direction.
 
 ## Photo Cards and Path Tooltip
@@ -162,7 +189,7 @@ The manifest stores:
 - `appVersion`
 - `rootDir`
 - `groups`
-- per-phase photo paths and labels
+- ordered `target` and `omit` cells containing image paths and labels
 - `cntPerPage`
 - `exportSettings.page3`
 - `exportSettings.page4`
@@ -179,6 +206,7 @@ Legacy fields are normalized on load:
 - Old single-format export settings are migrated into `page3` and `page4`.
 - Legacy cell-margin objects are normalized to the current shape.
 - Old `paperTemplate` content is copied into both `paperTemplates.hwpx` and `paperTemplates.docx` when no split template exists.
+- Old `before`, `processing`, `after`, and `other` photo/label arrays are migrated to `target` and `omit` cells.
 - After save, legacy fields are omitted from the normalized manifest.
 
 ## Saving
@@ -187,7 +215,7 @@ Legacy fields are normalized on load:
 - Saving validates that the selected base folder still exists.
 - The file is written through a temporary file and moved into place.
 - Missing, duplicate, ignored, or deleted photo paths are removed during sanitization.
-- Phase labels are kept aligned with photo paths.
+- Empty, invalid, or duplicate image paths are cleared without deleting their cells or labels.
 
 ## Export
 
@@ -196,14 +224,18 @@ Legacy fields are normalized on load:
 - HWPX and DOCX exports use their own paper-template settings.
 - Each work category starts on a new page.
 - Photos from different categories are never mixed on the same page.
-- Photos are ordered by phase: `전`, `중`, `후`.
-- A page contains up to the category's `cntPerPage` value.
-- If a category has more photos than `cntPerPage`, it continues on the next page.
+- Every target cell is exported in array order.
+- An empty target image renders its label and a same-sized empty photo cell without creating image media.
+- Omit cells are not embedded, listed, or rendered in exported documents.
+- A page contains up to the category's `cntPerPage` target cells, including empty-image cells.
+- If a category has more target cells than `cntPerPage`, it continues on the next page.
 - Each exported page uses one table.
 - The top header contains the configured title and subtitle.
 - The bottom row contains the `공종` label and category title.
 - Table borders are black.
 - If page numbers are enabled, DOCX uses a centered footer and HWPX uses a centered footer control.
+- Each item whose title, target list, and omit list are all empty emits exactly one output page at its ordered position.
+- Blank pages omit the configured title, subtitle, work-category title, table, labels, and photos while retaining document-level page numbering.
 
 ## Thumbnail Cache
 

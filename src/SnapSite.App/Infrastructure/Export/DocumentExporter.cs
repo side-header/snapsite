@@ -152,33 +152,42 @@ public sealed partial class DocumentExporter
         var index = 1;
         foreach (var group in state.Groups)
         {
-            foreach (var phase in new[] { Phase.Before, Phase.Processing, Phase.After })
+            if (group.IsBlankPage)
             {
-                foreach (var relativePath in group.Photos(phase))
-                {
-                    var normalized = AppState.NormalizePath(relativePath);
-                    var absolutePath = FileScanner.ToAbsolutePath(rootDir, normalized);
-                    if (!File.Exists(absolutePath))
-                    {
-                        throw new FileNotFoundException($"사진 파일을 찾을 수 없습니다: {normalized}", absolutePath);
-                    }
+                continue;
+            }
 
-                    var mediaName = $"image{index}.jpg";
-                    var hwpxId = $"BIN{index:0000}";
-                    var hwpxExt = ".jpg";
-                    var hwpxName = $"{hwpxId}{hwpxExt}";
-                    yield return new ExportImage(
-                        normalized,
-                        absolutePath,
-                        Path.GetFileName(normalized),
-                        $"rId{index + 10}",
-                        $"word/media/{mediaName}",
-                        hwpxId,
-                        $"BinData/{hwpxName}",
-                        group.Title,
-                        phase);
-                    index++;
+            for (var cellIndex = 0; cellIndex < group.Target.Count; cellIndex++)
+            {
+                var relativePath = group.Target[cellIndex].Image;
+                if (string.IsNullOrWhiteSpace(relativePath))
+                {
+                    continue;
                 }
+
+                var normalized = AppState.NormalizePath(relativePath);
+                var absolutePath = FileScanner.ToAbsolutePath(rootDir, normalized);
+                if (!File.Exists(absolutePath))
+                {
+                    throw new FileNotFoundException($"사진 파일을 찾을 수 없습니다: {normalized}", absolutePath);
+                }
+
+                var mediaName = $"image{index}.jpg";
+                var hwpxId = $"BIN{index:0000}";
+                var hwpxExt = ".jpg";
+                var hwpxName = $"{hwpxId}{hwpxExt}";
+                yield return new ExportImage(
+                    normalized,
+                    absolutePath,
+                    Path.GetFileName(normalized),
+                    $"rId{index + 10}",
+                    $"word/media/{mediaName}",
+                    hwpxId,
+                    $"BinData/{hwpxName}",
+                    group.Id,
+                    group.Title,
+                    cellIndex);
+                index++;
             }
         }
     }
@@ -311,6 +320,12 @@ public sealed partial class DocumentExporter
         for (var i = 0; i < pages.Count; i++)
         {
             builder.Append(PageBreak());
+            if (pages[i].IsBlankPage)
+            {
+                builder.Append(DocxBlankPageContent());
+                continue;
+            }
+
             var settings = state.ExportSettings.SettingsFor(pages[i].CntPerPage);
             builder.Append(DocxTemplateHeader(template));
             builder.Append(DocxPageTable(pages[i], template, settings.Docx, settings.DocxCell!, settings.DocxPhoto!, settings.DocxWorkCell!));
@@ -324,26 +339,28 @@ public sealed partial class DocumentExporter
 
     private static IEnumerable<ExportPage> BuildExportPages(AppState state, List<ExportImage> images)
     {
-        var index = images.ToDictionary(image => $"{image.GroupTitle}|{image.Phase.Key()}|{image.RelativePath}", StringComparer.OrdinalIgnoreCase);
+        var index = images.ToDictionary(image => $"{image.GroupId}|{image.CellIndex}", StringComparer.OrdinalIgnoreCase);
 
         foreach (var group in state.Groups)
         {
-            var items = new List<ExportPageItem>();
-            foreach (var phase in new[] { Phase.Before, Phase.Processing, Phase.After })
+            if (group.IsBlankPage)
             {
-                var photos = group.Photos(phase);
-                for (var i = 0; i < photos.Count; i++)
-                {
-                    var normalized = AppState.NormalizePath(photos[i]);
-                    var key = $"{group.Title}|{phase.Key()}|{normalized}";
-                    if (!index.TryGetValue(key, out var image))
-                    {
-                        continue;
-                    }
+                yield return new ExportPage(string.Empty, 3, [], IsBlankPage: true);
+                continue;
+            }
 
-                    var label = group.LabelAt(phase, i);
-                    items.Add(new ExportPageItem(label, image));
+            var items = new List<ExportPageItem>();
+            for (var cellIndex = 0; cellIndex < group.Target.Count; cellIndex++)
+            {
+                var cell = group.Target[cellIndex];
+                ExportImage? image = null;
+                if (!string.IsNullOrWhiteSpace(cell.Image))
+                {
+                    var key = $"{group.Id}|{cellIndex}";
+                    index.TryGetValue(key, out image);
                 }
+
+                items.Add(new ExportPageItem(cell.Label, image));
             }
 
             var limit = group.CntPerPage == 4 ? 4 : 3;
@@ -362,10 +379,10 @@ public sealed partial class DocumentExporter
         {
             var settings = state.ExportSettings.SettingsFor(page.CntPerPage);
             var metrics = DocxTableMetrics(page.CntPerPage, settings.Docx, settings.DocxCell!, settings.DocxWorkCell!, state.PaperTemplates!.Docx);
-            foreach (var item in page.Items)
+            foreach (var item in page.Items.Where(item => item.Image is not null))
             {
                 var size = DocxImageSizeTwips(metrics.ImageWidth, metrics.RowHeight, CellLayout.From(settings.DocxPhoto!));
-                sizes[item.Image] = ImagePixelSize.FromDocxTwips(size.Width, size.Height, imageDpi);
+                sizes[item.Image!] = ImagePixelSize.FromDocxTwips(size.Width, size.Height, imageDpi);
             }
         }
 
@@ -385,10 +402,10 @@ public sealed partial class DocumentExporter
         {
             var settings = state.ExportSettings.SettingsFor(page.CntPerPage);
             var metrics = HwpxTableMetrics(page.CntPerPage, settings.Hwpx, settings.HwpxCell!, settings.HwpxWorkCell!, state.PaperTemplates!.Hwpx);
-            foreach (var item in page.Items)
+            foreach (var item in page.Items.Where(item => item.Image is not null))
             {
                 var size = HwpxImageSize(metrics.ImageWidth, metrics.RowHeight, CellLayout.From(settings.HwpxPhoto!));
-                sizes[item.Image] = ImagePixelSize.FromHwpxUnits(size.Width, size.Height, imageDpi);
+                sizes[item.Image!] = ImagePixelSize.FromHwpxUnits(size.Width, size.Height, imageDpi);
             }
         }
 
@@ -464,7 +481,10 @@ public sealed partial class DocumentExporter
         {
             builder.Append($"""<w:tr><w:trPr><w:trHeight w:val="{metrics.RowHeight}" w:hRule="exact"/></w:trPr>""");
             builder.Append($"""<w:tc><w:tcPr><w:tcW w:w="{metrics.LabelWidth}" w:type="dxa"/><w:vAlign w:val="center"/></w:tcPr>{DocxCellParagraph(item.Label, center: true, bold: true, fontSizeHalfPoints: 30, fontFamily: template.FontFamily)}</w:tc>""");
-            builder.Append($"""<w:tc><w:tcPr><w:tcW w:w="{metrics.ImageWidth}" w:type="dxa"/>{DocxCellMarginsXml(cell)}<w:vAlign w:val="center"/></w:tcPr>{DocxImageParagraph(item.Image, metrics.ImageWidth, metrics.RowHeight, photo)}</w:tc>""");
+            var photoContent = item.Image is null
+                ? "<w:p/>"
+                : DocxImageParagraph(item.Image, metrics.ImageWidth, metrics.RowHeight, photo);
+            builder.Append($"""<w:tc><w:tcPr><w:tcW w:w="{metrics.ImageWidth}" w:type="dxa"/>{DocxCellMarginsXml(cell)}<w:vAlign w:val="center"/></w:tcPr>{photoContent}</w:tc>""");
             builder.Append("</w:tr>");
         }
 
@@ -570,6 +590,11 @@ public sealed partial class DocumentExporter
     private static string PageBreak()
     {
         return """<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="1" w:lineRule="exact"/><w:rPr><w:sz w:val="1"/></w:rPr></w:pPr><w:r><w:br w:type="page"/></w:r></w:p>""";
+    }
+
+    private static string DocxBlankPageContent()
+    {
+        return """<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="1" w:lineRule="exact"/><w:rPr><w:sz w:val="1"/></w:rPr></w:pPr><w:r><w:t/></w:r></w:p>""";
     }
 
     private static string DocxFooterXml()
@@ -1112,27 +1137,20 @@ public sealed partial class DocumentExporter
             var countOnPage = 0;
             var limit = group.CntPerPage == 4 ? 4 : 3;
 
-            foreach (var phase in new[] { Phase.Before, Phase.Processing, Phase.After })
+            foreach (var cell in group.Target)
             {
-                var photos = group.Photos(phase);
-                if (photos.Count == 0)
+                if (countOnPage >= limit)
                 {
-                    continue;
+                    builder.Append(HwpxParagraph(ref paragraphId, string.Empty, "0", "0", pageBreak: true));
+                    countOnPage = 0;
                 }
 
-                for (var i = 0; i < photos.Count; i++)
+                builder.Append(HwpxParagraph(ref paragraphId, cell.Label, "0", "2"));
+                if (!string.IsNullOrWhiteSpace(cell.Image))
                 {
-                    if (countOnPage >= limit)
-                    {
-                        builder.Append(HwpxParagraph(ref paragraphId, string.Empty, "0", "0", pageBreak: true));
-                        countOnPage = 0;
-                    }
-
-                    var path = photos[i];
-                    builder.Append(HwpxParagraph(ref paragraphId, group.LabelAt(phase, i), "0", "2"));
-                    builder.Append(HwpxParagraph(ref paragraphId, $"[사진] {Path.GetFileName(path)}", "0", "0"));
-                    countOnPage++;
+                    builder.Append(HwpxParagraph(ref paragraphId, $"[사진] {Path.GetFileName(cell.Image)}", "0", "0"));
                 }
+                countOnPage++;
             }
 
             builder.Append(HwpxParagraph(ref paragraphId, string.Empty, "0", "0", pageBreak: true));
@@ -1170,6 +1188,12 @@ public sealed partial class DocumentExporter
 
         for (var i = 0; i < pages.Count; i++)
         {
+            if (pages[i].IsBlankPage)
+            {
+                builder.Append(HwpxParagraph(ref paragraphId, string.Empty, HwpxZeroParaPrId, "0", pageBreak: true));
+                continue;
+            }
+
             var settings = state.ExportSettings.SettingsFor(pages[i].CntPerPage);
             builder.Append(HwpxPageTable(ref paragraphId, pages[i], template, settings.Hwpx, settings.HwpxCell!, settings.HwpxPhoto!, settings.HwpxWorkCell!, string.Empty, pageBreak: true));
         }
@@ -1193,9 +1217,13 @@ public sealed partial class DocumentExporter
         {
             var item = page.Items[i];
             var row = i;
+            var labelContent = HwpxCellText(ref id, item.Label, HwpxTablePhaseCharPrId);
+            var photoContent = item.Image is null
+                ? HwpxCellText(ref id, string.Empty, "0")
+                : HwpxCellImage(ref id, item.Image, metrics.ImageWidth, metrics.RowHeight, photo);
             builder.Append(HwpxTableRow(ref id, row, metrics.RowHeight, page.Items.Count + 1, [
-                HwpxCell.NoMargin(0, 1, metrics.LabelWidth, HwpxCellText(ref id, item.Label, HwpxTablePhaseCharPrId)),
-                HwpxCell.NoMargin(1, 1, metrics.ImageWidth, HwpxCellImage(ref id, item.Image, metrics.ImageWidth, metrics.RowHeight, photo))
+                HwpxCell.NoMargin(0, 1, metrics.LabelWidth, labelContent),
+                HwpxCell.NoMargin(1, 1, metrics.ImageWidth, photoContent)
             ]));
         }
 
@@ -1433,14 +1461,16 @@ public sealed partial class DocumentExporter
         builder.AppendLine(ExportDocumentTitle);
         foreach (var group in state.Groups)
         {
-            builder.AppendLine(group.Title);
-            foreach (var phase in new[] { Phase.Before, Phase.Processing, Phase.After })
+            if (group.IsBlankPage)
             {
-                var photos = group.Photos(phase);
-                for (var i = 0; i < photos.Count; i++)
-                {
-                    builder.AppendLine($"{group.LabelAt(phase, i)} {Path.GetFileName(photos[i])}".TrimStart());
-                }
+                continue;
+            }
+
+            builder.AppendLine(group.Title);
+            foreach (var cell in group.Target)
+            {
+                var fileName = string.IsNullOrWhiteSpace(cell.Image) ? string.Empty : Path.GetFileName(cell.Image);
+                builder.AppendLine($"{cell.Label} {fileName}".TrimEnd());
             }
         }
         return builder.ToString();
