@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="src/SiteSnap.Domain/SiteSnap.Domain.csproj" />
+  <Project Path="src/SiteSnap.Application/SiteSnap.Application.csproj" />
+  <Project Path="src/SiteSnap.Infrastructure/SiteSnap.Infrastructure.csproj" />
+  <Project Path="src/SnapSite.App/SiteSnap.App.csproj" />
+  <Project Path="tests/SiteSnap.CharacterizationTests/SiteSnap.CharacterizationTests.csproj" />
+</Solution>

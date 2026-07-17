@@ -1,6 +1,6 @@
 # SiteSnap
 
-SiteSnap is a C# + Avalonia desktop app for sorting photos by work phase (`before / progress / after`) and exporting them as `docx` and `hwpx` documents.
+SiteSnap is a C# + Avalonia desktop app for arranging labeled photo cells into exported (`target`) and excluded (`omit`) lists, then creating `docx` and `hwpx` documents.
 
 ## Development Run
 
@@ -57,11 +57,12 @@ The Windows build is published as a single executable, so you can usually send o
 ## Workflow
 
 1. Select the base folder with `폴더 열기`.
-2. Create a work category with `공종 추가`.
-3. Select photos from the unclassified photo area.
-4. Use the `전`, `중`, and `후` buttons in the right-side group area to classify photos.
-5. Save the working state to `sitesnape_manifest.json` with `저장하기`.
-6. Export files as `exports/sitesnap-yyMMddHHmmss.docx` and `exports/sitesnap-yyMMddHHmmss.hwpx` with `내보내기`.
+2. Create a work category with `공종 페이지 추가`.
+3. Select one photo normally, Shift-click a visible range, or Ctrl/Command-click individual photos in the unclassified area. Ordered green badges appear when at least two photos are selected.
+4. New categories begin with `전`, `중`, and `후` target cells and an empty omit area. A drop fills an empty destination cell first; an occupied destination inserts to its right. Multiple photos dropped on an exact cell follow the configured empty-cell and omit-overflow rules. Photos in the omit area stay classified but are not exported.
+5. Optionally insert ordered blank output pages with `빈 페이지 추가` and drag them among the work categories.
+6. Save the working state to `sitesnape_manifest.json` with `저장하기`.
+7. Export files as `exports/sitesnap-yyMMddHHmmss.docx` and `exports/sitesnap-yyMMddHHmmss.hwpx` with `내보내기`.
 
 ## Cache Location
 

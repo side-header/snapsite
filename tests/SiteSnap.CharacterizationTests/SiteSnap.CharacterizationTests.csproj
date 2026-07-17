@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>SiteSnap.CharacterizationTests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/SiteSnap.Domain/SiteSnap.Domain.csproj" />
+    <ProjectReference Include="../../src/SiteSnap.Application/SiteSnap.Application.csproj" />
+    <ProjectReference Include="../../src/SiteSnap.Infrastructure/SiteSnap.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

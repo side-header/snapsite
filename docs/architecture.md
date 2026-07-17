@@ -2,44 +2,35 @@
 
 ## Overview
 
-SiteSnap is a cross-platform desktop application built with C#, .NET 10, and Avalonia UI. The user-facing product name is SiteSnap. The historical project folder and namespace still use `NewGreen` internally.
+SiteSnap is a cross-platform desktop application built with C#, .NET 10, and Avalonia UI. The codebase uses a multi-project DDD structure with explicit Domain, Application, Infrastructure, and Presentation boundaries.
 
 The app scans a selected base folder, keeps classification state in memory, saves normalized JSON state to `sitesnape_manifest.json`, and exports photo-sheet documents as HWPX or DOCX.
 
 ## Project Layout
 
 ```text
-src/SnapSite.App/
-  SiteSnap.App.csproj
-  Program.cs
-  App.cs
-  app.manifest
-  Resources/
-    base.hwpx
-  Domain/
-    AppState.cs
-    ExportPageSettings.cs
-    ExportSettings.cs
-    LayoutSettings.cs
-    PaperTemplateSettings.cs
-    Phase.cs
-    PhotoGroup.cs
-    ScannedFiles.cs
-  Infrastructure/
-    Export/
-      DocumentExporter.cs
-      DocumentExporter.Models.cs
-    FileSystem/
-      FileScanner.cs
-    Persistence/
-      MetadataStore.cs
-    Thumbnails/
-      ThumbnailService.cs
-  UI/
-    MainWindow.cs
-    MainWindow.Photos.cs
-    MainWindow.Settings.cs
+src/
+  SiteSnap.Domain/          # aggregates, entities, value/settings models
+  SiteSnap.Application/     # use cases and infrastructure ports
+  SiteSnap.Infrastructure/  # scanning, persistence, DOCX/HWPX adapters
+  SnapSite.App/             # Avalonia Presentation and composition root
+    Presentation/
+      MainWindow/
+      Services/             # Avalonia-specific thumbnail service
+tests/
+  SiteSnap.CharacterizationTests/
+SiteSnap.slnx
 ```
+
+Project references enforce this direction:
+
+```text
+SiteSnap.App ───────► SiteSnap.Application ───────► SiteSnap.Domain
+      │                       ▲
+      └────────────► SiteSnap.Infrastructure ──────┘
+```
+
+`App.cs` is the composition root. Presentation code consumes Application services; concrete file-system, persistence, and export adapters are created only at startup.
 
 Supporting scripts:
 
@@ -52,7 +43,7 @@ scripts/publish-windows-x64.ps1
 
 ## Application Startup
 
-`Program.cs` starts the Avalonia desktop lifetime. `App.cs` configures the Avalonia application. `MainWindow` builds the UI in code rather than XAML.
+`Program.cs` starts the Avalonia desktop lifetime. `App.cs` configures Avalonia and injects `WorkspaceService` and `DocumentExportService` into `MainWindow`. `MainWindow` builds the UI in code rather than XAML.
 
 The app uses one main window and keeps the active `AppState`, current `ScanResult`, selected group, selected photo, zoom levels, and panel visibility in the window instance.
 
@@ -81,23 +72,18 @@ public sealed class AppState
 
 - `Id`
 - `Title`
-- `Before`
-- `BeforeLabels`
-- `Processing`
-- `ProcessingLabels`
-- `After`
-- `AfterLabels`
+- derived blank-page state (`Title` empty and both cell lists empty)
+- `Target`
+- `Omit`
 - `CntPerPage`
 
-Photos are stored as base-folder-relative paths. Labels are stored separately but normalized to stay aligned with each phase photo list.
+`Target` and `Omit` are ordered `PhotoCell` lists. Each cell owns an `Image` base-folder-relative path and a `Label`. Empty image strings preserve empty cells and their labels.
 
-### Phase
+New groups start with three target cells labeled `전`, `중`, and `후` and an empty omit list. After creation, normal groups may persist any target or omit cell count, including zero; normalization does not recreate deleted cells. An item with an empty title and empty target and omit lists is treated as a blank page, and blank pages share the ordered `Groups` list. The UI renders those empty collections as target and omit drop areas without creating placeholder cells; the first drop creates cells in only the chosen collection and turns the item into a normal group.
 
-`Phase` has three values:
+### Legacy Manifest Migration
 
-- `Before`, key `before`, label `전`
-- `Processing`, key `processing`, label `중`
-- `After`, key `after`, label `후`
+`PhotoGroup.MigrateLegacyCells()` converts older `before`, `processing`, `after`, and `other` photo/label arrays to `Target` and `Omit`. Legacy properties are cleared after conversion and omitted on the next save.
 
 ### ExportSettings
 
@@ -164,7 +150,7 @@ Sanitization removes ignored paths, missing files, and duplicate photo paths. It
 
 `FileScanner` scans the selected base folder.
 
-- Maximum folder depth is currently `3`, controlled by `MaxFolderDepth`.
+- Maximum folder depth is currently `7`, controlled by `MaxFolderDepth`.
 - Ignored top-level directory names are `exports` and `.newgreen-cache`.
 - Supported photo extensions are `.jpg`, `.jpeg`, `.png`, `.gif`, `.bmp`, `.webp`, `.tif`, and `.tiff`.
 - Results are sorted case-insensitively by relative path.
@@ -193,11 +179,13 @@ Thumbnails are stored under the `thumbnails` child folder. `ClearCache()` clears
 
 ## UI Architecture
 
-`MainWindow` is split into three partial files:
+`MainWindow` remains a Presentation partial class split into three behavior-preserving files:
 
-- `MainWindow.cs`: shell layout, top menu, panels, state loading, save, export, dialogs
-- `MainWindow.Photos.cs`: photo cards, drag and drop, preview, path tooltip, image interactions
-- `MainWindow.Settings.cs`: paper settings dialog, form controls, layout previews
+- `Presentation/MainWindow/MainWindow.cs`: shell layout, top menu, panels, state loading, save, export, dialogs
+- `Presentation/MainWindow/MainWindow.Photos.cs`: photo cards, drag and drop, preview and image interactions
+- `Presentation/MainWindow/MainWindow.Settings.cs`: paper settings dialog, form controls, layout previews
+
+Avalonia-specific thumbnail caching stays in Presentation because its public API returns `Bitmap`. File scanning, JSON persistence, and document export are Infrastructure adapters behind Application interfaces.
 
 ### Top Bar
 
@@ -225,7 +213,7 @@ The app does not embed native Finder or Windows Explorer controls.
 
 The unclassified area builds a tree rooted at the selected base folder name. It contains only photos that are not currently assigned to any group. Folder expansion state is tracked separately in `expandedUnclassifiedPaths`.
 
-Drag targets allow classified photos to be dropped back into the unclassified area for removal.
+Drag targets allow classified photos to be dropped back into the unclassified area. This removes the entire matching target or omit cell, including its label, and empty cell arrays remain empty after saving and reopening.
 
 ### Classified Area
 
@@ -233,7 +221,8 @@ The classified area renders one row per `PhotoGroup`.
 
 The header actions are hidden until a folder is opened. After opening a folder, the header shows:
 
-- `공종 추가`
+- `빈 페이지 추가`
+- `공종 페이지 추가`
 - zoom out
 - zoom in
 
@@ -245,7 +234,13 @@ The preview panel is optional. If no group is selected, it displays `공종을 �
 
 ### Photo Cards
 
-Photo cards load thumbnails through `ThumbnailService`. They support drag and drop, click selection, preview, and path tooltips.
+Photo cards load thumbnails through `ThumbnailService`. They support drag and drop, Shift range selection, Ctrl/Command toggle selection, preview, and path tooltips. The UI records the visible selectable card order and a transient range anchor; forward or reverse ranges update the ordered selection that is encoded in a prefixed JSON drag payload for multi-photo moves. Hidden and assigned photos are reconciled out when the unclassified tree is rebuilt.
+
+Classified cells with an empty image render a white border-only photo card. The omit collection background remains `#F7F9FA`, the editable label remains above the card, empty target and omit labels show no watermark, and no image placeholder mark is rendered inside it.
+
+Hovering a target card shows a centered bottom overlay with `−`, `←`, and `→`; hovering an omit card shows only `−`. Removal uses `AppState.RemoveCell`, while target-side arrows call `AppState.InsertEmptyCell` for the immediately adjacent index. All controls share stable hover resources, and button presses are excluded from photo drag initiation.
+
+For a single-photo drop, `AppState.PlacePhotoAt` fills the exact drop cell when its image is empty; an occupied drop cell receives a new unlabeled cell immediately to its right. An exact-cell multi-photo drop uses `AppState.PlacePhotosBesideCell`. From an empty target cell, it fills empty target cells at or to the right of the drop index, skips occupied cells, then sends overflow through existing empty omit cells before appending new omit cells. From an empty omit cell, it fills right-side empty omit cells and appends the remainder there. An occupied cell remains the anchor for the existing behavior: all selected photos are inserted contiguously immediately to its right in the same collection. Collection background drops use `AppState.PlacePhotosInCollection`, reuse empty cells in that collection, and append the remainder there. Group headers reject photo drops because they do not identify a target or omit destination, while group reorder drops remain enabled.
 
 The file-path tooltip is anchored to the file-name text, not the entire card. It displays a relative tree path rooted at the selected base folder and stays open while the pointer is over the file name or tooltip content.
 
@@ -297,13 +292,16 @@ DOCX and HWPX share the same page-splitting model:
 
 ```text
 PhotoGroup
-  -> flatten before, processing, after photos
-  -> preserve per-photo phase labels
-  -> split by CntPerPage
-  -> create ExportPage objects
+  -> empty title + empty target/omit: create one blank ExportPage
+  -> normal group: flatten every target cell in array order
+     -> exclude omit cells
+     -> preserve each target cell label
+     -> render an empty photo cell when image is empty
+     -> split by CntPerPage
+     -> create table ExportPage objects
 ```
 
-Each group starts on a new page. Different groups do not share a page.
+Each group starts on a new page. Different groups do not share a page. Blank pages preserve their list position, render no title or table content, and inherit document-level page numbering.
 
 ### DOCX Generation
 
