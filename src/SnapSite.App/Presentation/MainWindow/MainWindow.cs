@@ -106,6 +106,8 @@ public sealed partial class MainWindow : Window
     private readonly List<(string RelativePath, Control Card)> renderedUnclassifiedPhotoCards = [];
     private readonly Dictionary<string, TextBlock> unclassifiedFolderStatusLabels = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Action<bool>> unclassifiedFolderGlyphPalettes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Action<bool>> explorerFolderGlyphPalettes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Action<bool, bool>> explorerPhotoNamePalettes = new(StringComparer.OrdinalIgnoreCase);
     private string? hoveredUnclassifiedFolderKey;
 
     public MainWindow(WorkspaceService workspaceService, DocumentExportService documentExportService)
@@ -715,7 +717,9 @@ public sealed partial class MainWindow : Window
 
     private void SelectGroupForPreview(string groupId)
     {
-        if (string.IsNullOrWhiteSpace(groupId) || state.GroupById(groupId) is not { IsBlankPage: false })
+        if (string.IsNullOrWhiteSpace(groupId) ||
+            selectedGroupId == groupId ||
+            state.GroupById(groupId) is null)
         {
             return;
         }
@@ -976,6 +980,8 @@ public sealed partial class MainWindow : Window
 
     private Control BuildExplorerTree()
     {
+        explorerFolderGlyphPalettes.Clear();
+        explorerPhotoNamePalettes.Clear();
         var root = BuildOpenedFolderRoot(includeOtherFiles: true);
         var tree = new StackPanel
         {
@@ -985,6 +991,7 @@ public sealed partial class MainWindow : Window
 
         var rowIndex = 0;
         AddExplorerRows(tree, root, 0, ref rowIndex);
+        RefreshExplorerSelectionVisuals();
         return tree;
     }
 
@@ -1106,7 +1113,7 @@ public sealed partial class MainWindow : Window
             content.Children.Add(new Border { Width = 18 });
         }
 
-        content.Children.Add(node.IsDirectory ? FolderGlyph() : FileGlyph());
+        content.Children.Add(node.IsDirectory ? ExplorerFolderGlyph(node.Key) : FileGlyph());
         content.Children.Add(EditableExplorerNameHost(node, isPhoto, isAssignedPhoto));
         if (isPhoto && !string.IsNullOrWhiteSpace(extension))
         {
@@ -1174,7 +1181,7 @@ public sealed partial class MainWindow : Window
 
     private Control EditableExplorerNameHost(ExplorerNode node, bool isPhoto, bool isAssignedPhoto)
     {
-        if (string.Equals(node.Key, UnclassifiedRootKey, StringComparison.OrdinalIgnoreCase))
+        if (node.IsDirectory)
         {
             return ExplorerNameText(node.Name);
         }
@@ -1184,9 +1191,50 @@ public sealed partial class MainWindow : Window
             return ExplorerNameText(node.Name);
         }
 
-        var width = ExplorerFileNameWidth(EditableName(node.Key, node.IsDirectory));
+        var width = ExplorerFileNameWidth(EditableName(node.Key));
         var foreground = isAssignedPhoto ? Brush("#c7ced6") : Brush("#202428");
-        return EditableFileNameHost(node.Key, 14, foreground, new Thickness(0), width, TextAlignment.Left, node.IsDirectory);
+        return EditableFileNameHost(
+            node.Key,
+            14,
+            foreground,
+            new Thickness(0),
+            width,
+            TextAlignment.Left,
+            registerForegroundUpdater: applyForeground =>
+            {
+                explorerPhotoNamePalettes[node.Key] = (isSelected, isAssigned) =>
+                    applyForeground(isSelected
+                        ? Brush("#2f80ed")
+                        : isAssigned
+                            ? Brush("#c7ced6")
+                            : Brush("#202428"));
+            });
+    }
+
+    private Control ExplorerFolderGlyph(string folderKey)
+    {
+        var (icon, applyColors) = CreateFolderGlyph();
+        explorerFolderGlyphPalettes[folderKey] = applyColors;
+        return icon;
+    }
+
+    private void RefreshExplorerSelectionVisuals()
+    {
+        foreach (var (folderKey, applyColors) in explorerFolderGlyphPalettes)
+        {
+            var folderPath = string.Equals(folderKey, UnclassifiedRootKey, StringComparison.Ordinal)
+                ? string.Empty
+                : folderKey;
+            applyColors(FolderPhotoSelection.HasSelectionInFolder(selectedPhotos, folderPath));
+        }
+
+        var assignedPhotos = state.AssignedSet();
+        foreach (var (relativePath, applyColors) in explorerPhotoNamePalettes)
+        {
+            applyColors(
+                SelectedPhotoIndex(relativePath) >= 0,
+                assignedPhotos.Contains(AppState.NormalizePath(relativePath)));
+        }
     }
 
     private static TextBlock ExplorerNameText(string text)
@@ -1278,11 +1326,6 @@ public sealed partial class MainWindow : Window
         }
 
         return (icon, ApplyFolderColors);
-    }
-
-    private static Control FolderGlyph()
-    {
-        return CreateFolderGlyph().Icon;
     }
 
     private Control Rule1FolderGlyph(string folderKey)
@@ -2261,7 +2304,8 @@ public sealed partial class MainWindow : Window
         var numberWithInsertControls = GroupNumberWithInsertControls(
             group,
             number,
-            out var hideNumberActionsForDrag);
+            out var hideNumberActionsForDrag,
+            out var reorderDragHandle);
         numberWithInsertControls.ZIndex = 10;
         AddToGrid(header, numberWithInsertControls, 0, 0);
 
@@ -2273,45 +2317,20 @@ public sealed partial class MainWindow : Window
             new Thickness(0, 0, 8, 0),
             new Thickness(4, 1)), 1, 0);
 
-        Point? rowSelectStart = null;
-        root.PointerPressed += (_, args) =>
-        {
-            if (args.Source is TextBox or Button or ComboBox)
+        root.AddHandler(
+            InputElement.PointerPressedEvent,
+            (_, args) =>
             {
-                return;
-            }
+                if (selectedGroupId == group.Id ||
+                    !args.GetCurrentPoint(root).Properties.IsLeftButtonPressed)
+                {
+                    return;
+                }
 
-            var point = args.GetCurrentPoint(root);
-            if (!point.Properties.IsLeftButtonPressed)
-            {
-                return;
-            }
-
-            rowSelectStart = point.Position;
-        };
-        root.PointerReleased += (_, args) =>
-        {
-            if (rowSelectStart is null || args.Source is TextBox or Button or ComboBox)
-            {
-                rowSelectStart = null;
-                return;
-            }
-
-            var delta = args.GetPosition(root) - rowSelectStart.Value;
-            rowSelectStart = null;
-            if (Math.Abs(delta.X) >= 6 || Math.Abs(delta.Y) >= 6)
-            {
-                return;
-            }
-
-            if (selectedGroupId != group.Id)
-            {
-                selectedGroupId = group.Id;
-                RefreshRight();
-            }
-
-            RefreshDetail();
-        };
+                SelectGroupForPreview(group.Id);
+            },
+            RoutingStrategies.Tunnel,
+            handledEventsToo: true);
 
         var remove = new Button
         {
@@ -2450,7 +2469,11 @@ public sealed partial class MainWindow : Window
         };
         classifiedGroupViews[group.Id] = container;
         classifiedGroupHighlightViews[group.Id] = highlight;
-        ConfigureGroupReorder(root, group, onDragStarted: hideNumberActionsForDrag);
+        ConfigureGroupReorder(
+            root,
+            reorderDragHandle,
+            group,
+            onDragStarted: hideNumberActionsForDrag);
         return container;
     }
 
@@ -2510,8 +2533,15 @@ public sealed partial class MainWindow : Window
     private Control GroupNumberWithInsertControls(
         PhotoGroup group,
         int number,
-        out Action hideForDrag)
+        out Action hideForDrag,
+        out Control reorderDragHandle)
     {
+        const double numberBadgeLeft = 2;
+        const double numberBadgeTop = 13;
+        const double numberBadgeSize = 28;
+        const double actionPopupWidth = 114;
+        var actionPopupLeft = numberBadgeLeft + numberBadgeSize;
+        var actionPopupTop = numberBadgeTop;
         var numberText = new TextBlock
         {
             Text = number.ToString(),
@@ -2525,9 +2555,9 @@ public sealed partial class MainWindow : Window
         classifiedGroupNumberTexts[group.Id] = numberText;
         var numberBorder = new Border
         {
-            Width = 28,
-            Height = 28,
-            Margin = new Thickness(2, 13, 0, 0),
+            Width = numberBadgeSize,
+            Height = numberBadgeSize,
+            Margin = new Thickness(numberBadgeLeft, numberBadgeTop, 0, 0),
             Background = Brushes.Transparent,
             BorderBrush = Brushes.Transparent,
             BorderThickness = new Thickness(1),
@@ -2563,9 +2593,14 @@ public sealed partial class MainWindow : Window
             }
             args.Handled = true;
         };
+        reorderDragHandle = numberBorder;
 
         var hoverHint = new PopupHoverHint();
-        hoverHint.Surface.Margin = new Thickness(141, 32, 0, 0);
+        hoverHint.Surface.Margin = new Thickness(
+            actionPopupLeft + actionPopupWidth,
+            actionPopupTop,
+            0,
+            0);
         hoverHint.Surface.MaxWidth = 180;
         hoverHint.Surface.HorizontalAlignment = HorizontalAlignment.Left;
         hoverHint.Surface.VerticalAlignment = VerticalAlignment.Top;
@@ -2583,7 +2618,8 @@ public sealed partial class MainWindow : Window
         var overlay = new Border
         {
             IsVisible = false,
-            Margin = new Thickness(27, 32, 0, 0),
+            Width = actionPopupWidth,
+            Margin = new Thickness(actionPopupLeft, actionPopupTop, 0, 0),
             Padding = new Thickness(2),
             Background = Brushes.White,
             BorderBrush = Brush("#c8d1da"),
@@ -2630,6 +2666,7 @@ public sealed partial class MainWindow : Window
 
         hideForDrag = () =>
         {
+            navigationStart = null;
             suppressUntilPointerExit = true;
             ApplyHoverState(show: false);
         };
@@ -2899,7 +2936,7 @@ public sealed partial class MainWindow : Window
         detailPanel.Margin = new Thickness(0);
 
         var group = state.GroupById(selectedGroupId);
-        if (group is null || group.IsBlankPage)
+        if (group is null)
         {
             detailPanel.Margin = new Thickness(12);
             detailPanel.Children.Add(new TextBlock
@@ -2942,12 +2979,12 @@ public sealed partial class MainWindow : Window
     {
         var section = new Border
         {
-            Background = Brushes.White,
+            Background = omit ? Brush("#F7F9FA") : Brushes.White,
             BorderBrush = Brush("#d0d6dc"),
             BorderThickness = showBottomBorder ? new Thickness(0, 0, 0, 1) : new Thickness(0),
             CornerRadius = new CornerRadius(0),
             Padding = new Thickness(0),
-            MinHeight = 220,
+            MinHeight = 320,
             HorizontalAlignment = HorizontalAlignment.Stretch
         };
 
@@ -3008,6 +3045,15 @@ public sealed partial class MainWindow : Window
             VerticalAlignment = VerticalAlignment.Stretch,
             Source = File.Exists(absolutePath) ? new Bitmap(absolutePath) : null
         };
+        var fileName = PermanentFileNameTextBox(
+            relativePath,
+            PhotoMetadataFontSize,
+            Brush("#1f252a"),
+            260,
+            isReadOnly: true,
+            showHoverBorder: false);
+        fileName.Margin = new Thickness(0, 10, 0, 0);
+        fileName.HorizontalAlignment = HorizontalAlignment.Center;
 
         var card = new Border
         {
@@ -3019,7 +3065,7 @@ public sealed partial class MainWindow : Window
             {
                 Children =
                 {
-                    EditableFileNameHost(relativePath, 12, Brush("#69737d"), new Thickness(0, 10, 0, 0), 260),
+                    fileName,
                     image
                 }
             }
