@@ -580,6 +580,10 @@ public sealed partial class MainWindow
             cell.Label = nextLabel;
             if (changed)
             {
+                if (selectedGroupId == group.Id)
+                {
+                    RefreshDetail();
+                }
                 QueueAutoSave("사진 라벨을 저장했습니다");
             }
             args.Handled = true;
@@ -594,7 +598,8 @@ public sealed partial class MainWindow
         double width,
         bool isReadOnly = false,
         Action? onBeginEdit = null,
-        Func<KeyModifiers, bool>? onPointerPressed = null)
+        Func<KeyModifiers, bool>? onPointerPressed = null,
+        bool showHoverBorder = true)
     {
         var input = FileNameEditor(
             relativePath,
@@ -610,9 +615,12 @@ public sealed partial class MainWindow
         input.BorderThickness = new Thickness(1);
         input.CornerRadius = new CornerRadius(4);
         input.BorderBrush = Brushes.Transparent;
-        input.Resources["TextControlBorderBrushPointerOver"] = Brush("#2f80ed");
-        input.PointerEntered += (_, _) => input.BorderBrush = Brush("#2f80ed");
-        input.PointerExited += (_, _) => input.BorderBrush = Brushes.Transparent;
+        if (showHoverBorder)
+        {
+            input.Resources["TextControlBorderBrushPointerOver"] = Brush("#2f80ed");
+            input.PointerEntered += (_, _) => input.BorderBrush = Brush("#2f80ed");
+            input.PointerExited += (_, _) => input.BorderBrush = Brushes.Transparent;
+        }
         if (onBeginEdit is not null)
         {
             input.GotFocus += (_, _) => onBeginEdit();
@@ -679,6 +687,7 @@ public sealed partial class MainWindow
             assigned ? Brush("#b7b9ba") : Brush("#1f252a"),
             nameWidth,
             isReadOnly: assigned,
+            showHoverBorder: !assigned,
             onPointerPressed: assigned
                 ? null
                 : modifiers =>
@@ -1203,6 +1212,7 @@ public sealed partial class MainWindow
 
         UpdateUnclassifiedFolderStatusCounts();
         RefreshUnclassifiedFolderGlyphColors();
+        RefreshExplorerSelectionVisuals();
 
         if (unclassifiedSelectionAction is not null && unclassifiedSelectionActionSummary is not null)
         {
@@ -2283,22 +2293,22 @@ public sealed partial class MainWindow
     }
 
     private void ConfigureGroupReorder(
-        Control control,
+        Control dropTarget,
+        Control dragHandle,
         PhotoGroup group,
-        double dragHandleHeight = 54,
         Action? onDragStarted = null)
     {
-        control.AddHandler(
+        dragHandle.AddHandler(
             InputElement.PointerPressedEvent,
             (_, e) =>
             {
-                if (e.Source is Button or ComboBox or Image)
+                if (IsGroupReorderDragExcluded(e.Source))
                 {
                     return;
                 }
 
-                var point = e.GetCurrentPoint(control);
-                if (!point.Properties.IsLeftButtonPressed || point.Position.Y > dragHandleHeight)
+                var point = e.GetCurrentPoint(dropTarget);
+                if (!point.Properties.IsLeftButtonPressed)
                 {
                     return;
                 }
@@ -2309,14 +2319,14 @@ public sealed partial class MainWindow
             RoutingStrategies.Tunnel,
             handledEventsToo: true);
 
-        control.PointerMoved += async (_, e) =>
+        dropTarget.PointerMoved += async (_, e) =>
         {
             if (groupDragStartPoint is null || string.IsNullOrWhiteSpace(pendingDragGroupId))
             {
                 return;
             }
 
-            var point = e.GetCurrentPoint(control);
+            var point = e.GetCurrentPoint(dropTarget);
             if (!point.Properties.IsLeftButtonPressed)
             {
                 pendingDragGroupId = string.Empty;
@@ -2340,7 +2350,7 @@ public sealed partial class MainWindow
             await DragDrop.DoDragDropAsync(e, data, DragDropEffects.Move);
         };
 
-        control.AddHandler(
+        dropTarget.AddHandler(
             InputElement.PointerReleasedEvent,
             (_, _) =>
             {
@@ -2350,8 +2360,8 @@ public sealed partial class MainWindow
             RoutingStrategies.Tunnel,
             handledEventsToo: true);
 
-        DragDrop.SetAllowDrop(control, true);
-        DragDrop.AddDragOverHandler(control, (_, e) =>
+        DragDrop.SetAllowDrop(dropTarget, true);
+        DragDrop.AddDragOverHandler(dropTarget, (_, e) =>
         {
             var relativePaths = GetDroppedPhotos(e);
             if (relativePaths.Count > 0)
@@ -2367,7 +2377,7 @@ public sealed partial class MainWindow
                 : DragDropEffects.None;
             e.Handled = true;
         });
-        DragDrop.AddDropHandler(control, (_, e) =>
+        DragDrop.AddDropHandler(dropTarget, (_, e) =>
         {
             var relativePaths = GetDroppedPhotos(e);
             if (relativePaths.Count > 0)
@@ -2389,6 +2399,22 @@ public sealed partial class MainWindow
             e.DragEffects = DragDropEffects.Move;
             e.Handled = true;
         });
+    }
+
+    private static bool IsGroupReorderDragExcluded(object? source)
+    {
+        var visual = source as Visual;
+        while (visual is not null)
+        {
+            if (visual is TextBox or Button or ComboBox or Image)
+            {
+                return true;
+            }
+
+            visual = visual.GetVisualParent();
+        }
+
+        return false;
     }
 
     private void ConfigureDropTarget(
@@ -2624,8 +2650,10 @@ public sealed partial class MainWindow
         bool showFullName = false,
         Action? onBeginEdit = null,
         Func<KeyModifiers, bool>? onPointerPressed = null,
-        bool singleLineLayout = false)
+        bool singleLineLayout = false,
+        Action<Action<IBrush>>? registerForegroundUpdater = null)
     {
+        var activeForeground = foreground;
         var host = new ContentControl
         {
             Width = width,
@@ -2637,7 +2665,7 @@ public sealed partial class MainWindow
 
         void ShowDisplay()
         {
-            host.Content = FileNameDisplay(relativePath, fontSize, foreground, width, textAlignment, showFullName, singleLineLayout, modifiers =>
+            host.Content = FileNameDisplay(relativePath, fontSize, activeForeground, width, textAlignment, showFullName, singleLineLayout, modifiers =>
             {
                 if (onPointerPressed?.Invoke(modifiers) == true)
                 {
@@ -2651,10 +2679,31 @@ public sealed partial class MainWindow
 
         void ShowEditor()
         {
-            host.Content = FileNameEditor(relativePath, fontSize, foreground, width, textAlignment, showFullName, singleLineLayout, _ => ShowDisplay());
+            host.Content = FileNameEditor(relativePath, fontSize, activeForeground, width, textAlignment, showFullName, singleLineLayout, _ => ShowDisplay());
+        }
+
+        void ApplyForeground(IBrush updatedForeground)
+        {
+            activeForeground = updatedForeground;
+            if (host.Content is TextBlock block)
+            {
+                block.Foreground = updatedForeground;
+                return;
+            }
+
+            if (host.Content is TextBox box)
+            {
+                box.Foreground = updatedForeground;
+                box.SelectionForegroundBrush = updatedForeground;
+                box.CaretBrush = updatedForeground;
+                box.Resources["TextControlForeground"] = updatedForeground;
+                box.Resources["TextControlForegroundFocused"] = updatedForeground;
+                box.Resources["TextControlForegroundPointerOver"] = updatedForeground;
+            }
         }
 
         ShowDisplay();
+        registerForegroundUpdater?.Invoke(ApplyForeground);
         return host;
     }
 
